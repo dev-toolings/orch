@@ -45,7 +45,7 @@ export function doctorChecks(home: string, which: Which = onPath, nested: Probe 
   check("claude worker (sandboxed Bash)", claudeMissing, "sudo apt install bubblewrap socat");
   if (process.platform === "linux" && !claudeMissing.length) {
     check("claude worker sandbox can nest a user namespace", nested() ? [] : ["nested user namespace in bwrap"],
-      "AppArmor blocks it: see 'Ubuntu 24.04 and later' in https://code.claude.com/docs/en/sandboxing");
+      "AppArmor blocks it: scripts/claude-sandbox-apparmor.sh --install");
   }
   // A Codex lead runs lane and orch only through this exec-policy rule.
   const rules = join(home, ".codex", "rules", "orch.rules");

@@ -57,6 +57,14 @@ du worker Claude, qui refuse de démarrer sans. `orch install` les installe via
 `sudo apt-get` en terminal interactif, sinon affiche la commande ;
 `--no-system-deps` saute cette étape.
 
+Ubuntu 24.04 et suivants : AppArmor empêche le sandbox de Claude d'imbriquer
+un user namespace dans bwrap (`orch doctor` le teste). Le script
+`scripts/claude-sandbox-apparmor.sh --install` remplace le profil Ubuntu
+`bwrap-userns-restrict` par celui de la doc Claude Code (bwrap non confiné,
+autorisé à créer des user namespaces) ; `--uninstall` restaure le profil
+Ubuntu, `--status` affiche l'état. Coût : tout process local peut obtenir un
+user namespace via bwrap, comme avant Ubuntu 24.04.
+
 ## Docs (`orch docs`)
 
 `catalog/docs.yaml` déclare une source par stack (clone git sparse ou
