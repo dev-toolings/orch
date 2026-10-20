@@ -53,10 +53,33 @@ probe() {
 }
 
 # The profile may be root-only (older installs of this script): read it as
-# root when needed, without a password prompt unless asked (ours prompt).
+# root when needed; `ours prompt` may ask for the sudo password, plain `ours`
+# never does.
+first_line() {
+  if [ -r "$PROFILE" ]; then head -n1 "$PROFILE"
+  elif [ "${1:-}" = prompt ]; then sudo head -n1 "$PROFILE"
+  else sudo -n head -n1 "$PROFILE" 2>/dev/null
+  fi
+}
 ours() {
   [ -f "$PROFILE" ] || return 1
-  { head -n1 "$PROFILE" 2>/dev/null || sudo $([ "${1:-}" = prompt ] || echo -n) head -n1 "$PROFILE" 2>/dev/null; } | grep -qxF "$MARK"
+  first_line "${1:-}" | grep -qxF "$MARK"
+}
+
+loaded() { sudo grep -q "^$1 " /sys/kernel/security/apparmor/profiles; }
+
+# Put back the Ubuntu profile and drop ours, after a failed install.
+rollback() {
+  echo "install failed: $1; restoring the previous state" >&2
+  if [ "$had_ours" = no ]; then
+    sudo apparmor_parser -R "$PROFILE" 2>/dev/null || true
+    sudo rm -f "$PROFILE"
+  fi
+  if [ "$had_disabled" = no ] && [ -L "$DISABLED" ]; then
+    sudo rm -f "$DISABLED"
+    sudo apparmor_parser -r "$UBUNTU"
+  fi
+  exit 1
 }
 
 install() {
@@ -69,21 +92,37 @@ install() {
     echo "refusing: $PROFILE exists and was not written by this script" >&2
     exit 1
   fi
+  had_ours=no; ours prompt && had_ours=yes
+  had_disabled=no; [ -L "$DISABLED" ] && had_disabled=yes
+  # Validate the replacement before touching anything (parse only, no load).
+  local tmp
+  tmp=$(mktemp)
+  profile_body > "$tmp"
+  if ! sudo apparmor_parser -Q -K "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    echo "refusing: the replacement profile does not parse; nothing changed" >&2
+    exit 1
+  fi
+  rm -f "$tmp"
   if [ -f "$UBUNTU" ]; then
-    sudo apparmor_parser -R "$UBUNTU" 2>/dev/null || true
+    if loaded bwrap && [ "$had_ours" = no ]; then
+      sudo apparmor_parser -R "$UBUNTU" || rollback "could not unload $UBUNTU"
+    fi
     [ -L "$DISABLED" ] || sudo ln -s "$UBUNTU" "$DISABLED"
     echo "disabled $UBUNTU"
   fi
   profile_body | sudo tee "$PROFILE" > /dev/null
   sudo chmod 644 "$PROFILE"
-  sudo apparmor_parser -r "$PROFILE"
+  sudo apparmor_parser -r "$PROFILE" || rollback "could not load $PROFILE"
   echo "loaded $PROFILE"
-  probe
+  probe || rollback "the sandbox probe still fails with the replacement profile"
 }
 
 uninstall() {
   if ours prompt; then
-    sudo apparmor_parser -R "$PROFILE" 2>/dev/null || true
+    if loaded bwrap; then
+      sudo apparmor_parser -R "$PROFILE" || { echo "could not unload $PROFILE; nothing removed" >&2; exit 1; }
+    fi
     sudo rm -f "$PROFILE"
     echo "removed $PROFILE"
   elif [ -f "$PROFILE" ]; then
@@ -91,7 +130,7 @@ uninstall() {
   fi
   if [ -L "$DISABLED" ]; then
     sudo rm -f "$DISABLED"
-    sudo apparmor_parser -r "$UBUNTU"
+    sudo apparmor_parser -r "$UBUNTU" || { echo "could not reload $UBUNTU: run sudo apparmor_parser -r $UBUNTU" >&2; exit 1; }
     echo "restored $UBUNTU"
   fi
   probe || true

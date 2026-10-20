@@ -2,7 +2,7 @@
 // lane: hand one bounded task to another harness, headless, in its own git
 // worktree, and print a short report. No model call happens in this process.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -19,25 +19,71 @@ function git(cwd: string, ...args: string[]): { ok: boolean; out: string } {
   return { ok: r.status === 0, out: (r.stdout ?? "").trim() };
 }
 
+// Snapshot budget: past this, `git add -A` would copy a dataset into the
+// caller's object store and hold a lane slot for minutes.
+export const SNAPSHOT_LIMITS = { files: 20_000, bytes: 512 * 1024 * 1024, timeoutMs: 300_000 };
+
+// The caller's status, unaffected by its config (status.showUntrackedFiles,
+// diff.ignoreSubmodules) and without the optional index refresh that would
+// rewrite the caller's .git/index.
+function statusEntries(cwd: string): string[] | null {
+  const r = spawnSync("git", ["--no-optional-locks", "-C", cwd, "status", "--porcelain=v1", "-z",
+    "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  return (r.stdout ?? "").split("\0").filter(Boolean);
+}
+
+type Base = { ok: true; sha: string; snapshotOf?: string } | { ok: false; reason: string };
+
 // The worker starts from the caller's full working tree. A dirty tree (tracked
-// edits, staged or not, and untracked files not ignored) becomes a snapshot
-// commit over HEAD, built through a private index so the caller's index, HEAD,
-// branches, stash and files stay untouched. A clean tree uses HEAD as is.
-function workerBase(repo: string, dir: string): { sha: string; snapshotOf?: string } | null {
+// edits, staged or not, force-added and untracked files not ignored) becomes a
+// snapshot commit over HEAD, built in a copy of the caller's index so its
+// tracked set (force-added ignored files included) survives, while the
+// caller's index, HEAD, branches, stash and files stay untouched. A clean tree
+// uses HEAD as is. Dirty submodules are refused: a superproject snapshot only
+// records their commit pointer.
+export function workerBase(repo: string, dir: string): Base {
   const head = git(repo, "rev-parse", "HEAD");
-  if (!head.ok) return null;
-  if (!git(repo, "status", "--porcelain").out) return { sha: head.out };
-  const env = { ...process.env, GIT_INDEX_FILE: join(dir, "snapshot.index") };
+  if (!head.ok) return { ok: false, reason: "no HEAD commit to start from" };
+  const entries = statusEntries(repo);
+  if (entries === null) return { ok: false, reason: "git status failed in the caller's repository" };
+  if (!entries.length) return { ok: true, sha: head.out };
+
+  const gitlinks = new Set(git(repo, "ls-files", "-s").out.split("\n")
+    .filter((l) => l.startsWith("160000 ")).map((l) => l.split("\t")[1]));
+  const dirtySub = entries.map((e) => e.slice(3)).filter((path) => gitlinks.has(path));
+  if (dirtySub.length) return { ok: false, reason: `dirty submodule ${dirtySub.join(", ")}: commit inside it first` };
+
+  const others = spawnSync("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], { encoding: "utf8" });
+  const untracked = (others.stdout ?? "").split("\0").filter(Boolean);
+  let bytes = 0;
+  for (const f of untracked) {
+    try {
+      bytes += statSync(join(repo, f)).size;
+    } catch {}
+  }
+  if (untracked.length > SNAPSHOT_LIMITS.files || bytes > SNAPSHOT_LIMITS.bytes) {
+    return { ok: false, reason: `untracked files too large to snapshot (${untracked.length} files, ${Math.round(bytes / 1048576)} MB): gitignore them or commit` };
+  }
+
+  const index = join(dir, "snapshot.index");
+  const callerIndex = resolve(repo, git(repo, "rev-parse", "--git-path", "index").out);
+  const env = { ...process.env, GIT_INDEX_FILE: index, GIT_OPTIONAL_LOCKS: "0" };
   const g = (...args: string[]) => {
-    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env });
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env, timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
     return r.status === 0 ? (r.stdout ?? "").trim() : null;
   };
   const short = head.out.slice(0, 12);
-  const tree = g("read-tree", "HEAD") !== null && g("add", "-A") !== null ? g("write-tree") : null;
-  const sha = tree && g("-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit-tree", tree, "-p", head.out,
-    "-m", `lane: snapshot of working tree over ${short}`);
-  rmSync(join(dir, "snapshot.index"), { force: true });
-  return sha ? { sha, snapshotOf: short } : null;
+  try {
+    if (existsSync(callerIndex)) copyFileSync(callerIndex, index);
+    else if (g("read-tree", "HEAD") === null) return { ok: false, reason: "could not seed the snapshot index" };
+    const tree = g("add", "-A") !== null ? g("write-tree") : null;
+    const sha = tree && g("-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit-tree", tree, "-p", head.out,
+      "-m", `lane: snapshot of working tree over ${short}`);
+    return sha ? { ok: true, sha, snapshotOf: short } : { ok: false, reason: "snapshot failed or timed out" };
+  } finally {
+    rmSync(index, { force: true });
+  }
 }
 
 // The worktree is a bare checkout: no installed dependencies, no gitignored
@@ -47,12 +93,15 @@ function workerBase(repo: string, dir: string): { sha: string; snapshotOf?: stri
 // Order: the spec's SETUP (`none` skips), then the repo's local, unversioned
 // `.orch/lane-setup` script, then a root bun.lock (`bun install
 // --frozen-lockfile`). LANE_REPO and LANE_WORKTREE are set for the script.
-export function setupCommand(spec: Spec, repo: string): { cmd: string; source: string } | null {
+// Only the spec's own command goes through a shell; paths never do.
+export function setupCommand(spec: Spec, repo: string): { argv: string[]; display: string; source: string } | null {
   const asked = spec.fields.SETUP?.trim();
-  if (asked) return asked === "none" ? null : { cmd: asked, source: "spec SETUP" };
+  if (asked) return asked === "none" ? null : { argv: ["sh", "-c", asked], display: asked, source: "spec SETUP" };
   const local = join(repo, ".orch", "lane-setup");
-  if (existsSync(local)) return { cmd: `sh ${JSON.stringify(local)}`, source: "repo .orch/lane-setup" };
-  if (existsSync(join(repo, "bun.lock"))) return { cmd: "bun install --frozen-lockfile", source: "auto, bun.lock" };
+  if (existsSync(local)) return { argv: ["sh", local], display: ".orch/lane-setup", source: "repo .orch/lane-setup" };
+  if (existsSync(join(repo, "bun.lock"))) {
+    return { argv: ["bun", "install", "--frozen-lockfile"], display: "bun install --frozen-lockfile", source: "auto, bun.lock" };
+  }
   return null;
 }
 
@@ -127,7 +176,7 @@ export async function laneRun(opts: {
   const started = new Date().toISOString();
   try {
     const b = workerBase(repo, dir);
-    if (!b) return { report: "LANE REPORT\nSTATUS: unavailable\nREASON: could not resolve or snapshot the base\n" };
+    if (!b.ok) return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${b.reason}\n` };
     const base = b.sha;
     if (!git(repo, "worktree", "add", "-q", "-b", branch, wt, base).ok) {
       return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: git worktree add failed\n` };
@@ -137,21 +186,36 @@ export async function laneRun(opts: {
     if (setup) {
       const t0 = performance.now();
       const setupLog = join(dir, "setup.log");
-      const s = await runLogged(["sh", "-c", setup.cmd], {
-        cwd: wt, logPath: setupLog, timeoutMs: 900_000, env: workerEnv({ LANE_REPO: repo, LANE_WORKTREE: wt }),
-      });
-      // Setup output must stay out of the result: anything it leaves that git
-      // sees would be committed as the worker's change.
-      const leftover = s.code === 0 && !s.timedOut ? git(wt, "status", "--porcelain").out : "";
-      if (s.code !== 0 || s.timedOut || leftover) {
+      let why: string | null = null;
+      try {
+        const s = await runLogged(setup.argv, {
+          cwd: wt, logPath: setupLog, timeoutMs: 900_000, env: workerEnv({ LANE_REPO: repo, LANE_WORKTREE: wt }),
+        });
+        if (s.code !== 0 || s.timedOut) {
+          why = `setup failed, exit ${s.code}${s.timedOut ? " (timeout)" : ""}\n${tail(existsSync(setupLog) ? readFileSync(setupLog, "utf8") : "", 12)}`;
+        } else {
+          // Setup output must stay out of the result: a file git sees or a
+          // commit it made would be reported as the worker's change.
+          const left = statusEntries(wt);
+          const moved = git(wt, "rev-parse", "HEAD").out !== base;
+          if (left === null) why = "git status failed in the worktree after setup";
+          else if (left.length) why = `setup left files git tracks (gitignore them or drop them):\n${tail(left.join("\n"), 8)}`;
+          else if (moved) why = "setup made a commit in the worktree";
+        }
+      } catch (e) {
+        why = `setup could not run: ${(e as Error).message}`;
+      }
+      if (why) {
         git(repo, "worktree", "remove", "--force", wt);
         git(repo, "branch", "-D", branch);
-        const why = leftover
-          ? `setup left files git tracks (gitignore them or drop them):\n${tail(leftover, 8)}`
-          : `setup failed, exit ${s.code}${s.timedOut ? " (timeout)" : ""}\n${tail(readFileSync(setupLog, "utf8"), 12)}`;
-        return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${why}\nSETUP: ${setup.cmd} (${setup.source})\nLOG: ${setupLog}\n` };
+        // A state record keeps the diagnostics discoverable, and lane gc removes them.
+        const failed: LaneState = {
+          id, to: opts.to, repo, base, branch, worktree: wt, status: "unavailable", changed: false, usage: {}, started, ended: new Date().toISOString(),
+        };
+        writeFileSync(join(dir, "state.json"), JSON.stringify(failed, null, 2));
+        return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${why}\nSETUP: ${setup.display} (${setup.source})\nLOG: ${setupLog}\n` };
       }
-      setupLine = `SETUP: ${setup.cmd} (${setup.source}, ok in ${Math.round((performance.now() - t0) / 1000)}s)`;
+      setupLine = `SETUP: ${setup.display} (${setup.source}, ok in ${Math.round((performance.now() - t0) / 1000)}s)`;
     }
     const promptPath = join(dir, "prompt.txt");
     writeFileSync(promptPath, PREAMBLE + spec.raw);
@@ -172,7 +236,9 @@ export async function laneRun(opts: {
     const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
     const last = existsSync(lastPath) ? readFileSync(lastPath, "utf8") : "";
 
-    const dirty = git(wt, "status", "--porcelain").out;
+    // Same forced view as the snapshot: the repo's status config is shared by
+    // the worktree and must not hide what the worker created.
+    const dirty = (statusEntries(wt) ?? []).join("\n");
     const commits = git(wt, "rev-list", `${base}..HEAD`).out;
     const changed = Boolean(dirty || commits);
 
@@ -217,7 +283,7 @@ export async function laneRun(opts: {
       `USAGE: ${fmtUsage(usage)}`,
       changed && status === "complete"
         ? b.snapshotOf
-          ? `INTEGRATE: git diff ${base} ${branch} | git apply  then: lane gc --drop ${id}`
+          ? `INTEGRATE: git diff --binary --no-ext-diff --no-textconv ${base} ${branch} | git apply && lane gc --drop ${id}`
           : `INTEGRATE: git merge --squash ${branch}  then: lane gc`
         : "",
       `LOG: ${logPath}`,

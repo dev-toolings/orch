@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bound, laneGc, laneRun } from "../src/lane.ts";
+import { bound, laneGc, laneRun, setupCommand, SNAPSHOT_LIMITS } from "../src/lane.ts";
 import { loadProfile, type Profile } from "../src/profile.ts";
 import { releaseSlot, reserveSlot } from "../src/slots.ts";
 
@@ -249,5 +249,87 @@ describe("lane depth", () => {
       delete process.env.ORCH_LANE;
     }
     expect(sh(repo, "git branch --list 'lane/*'").stdout).toBe(before);
+  });
+});
+
+describe("snapshot and setup hardening (review findings)", () => {
+  const fresh = (name: string) => {
+    const r = join(root, name);
+    mkdirSync(r);
+    sh(r, "git init -q && echo base > a.txt && printf 'ignored/\\n' > .gitignore && git add -A && git -c user.email=t@t -c user.name=t commit -q -m init");
+    return r;
+  };
+
+  test("force-added ignored files and untracked files survive status.showUntrackedFiles=no; the caller index is byte-identical", async () => {
+    const r = fresh("snap-index");
+    mkdirSync(join(r, "ignored"));
+    writeFileSync(join(r, "ignored", "fixture.txt"), "forced\n");
+    sh(r, "git add -f ignored/fixture.txt && git config status.showUntrackedFiles no");
+    writeFileSync(join(r, "new.txt"), "untracked\n");
+    const indexBefore = readFileSync(join(r, ".git", "index"));
+    fake("codex", "echo hi > out.txt");
+    const { state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
+    expect(state?.status).toBe("complete");
+    expect(readFileSync(join(state!.worktree, "ignored", "fixture.txt"), "utf8")).toBe("forced\n");
+    expect(readFileSync(join(state!.worktree, "new.txt"), "utf8")).toBe("untracked\n");
+    expect(readFileSync(join(r, ".git", "index")).equals(indexBefore)).toBe(true);
+  });
+
+  test("a dirty submodule is refused instead of silently dropped", async () => {
+    const sub = fresh("snap-sub-src");
+    const r = fresh("snap-super");
+    sh(r, `git -c protocol.file.allow=always submodule add -q ${sub} dep && git -c user.email=t@t -c user.name=t commit -q -m sub`);
+    writeFileSync(join(r, "dep", "a.txt"), "edited inside the submodule\n");
+    fake("codex", "echo hi > out.txt");
+    const { report, state } = await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile });
+    expect(state).toBeUndefined();
+    expect(report).toContain("dirty submodule dep");
+  });
+
+  test("the snapshot budget refuses an oversized untracked tree", async () => {
+    const r = fresh("snap-budget");
+    writeFileSync(join(r, "x1.bin"), "1");
+    writeFileSync(join(r, "x2.bin"), "2");
+    const saved = SNAPSHOT_LIMITS.files;
+    SNAPSHOT_LIMITS.files = 1;
+    try {
+      const { report } = await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile });
+      expect(report).toContain("untracked files too large to snapshot (2 files");
+    } finally {
+      SNAPSHOT_LIMITS.files = saved;
+    }
+  });
+
+  test("a SETUP that commits is refused, and a failed setup is left for lane gc", async () => {
+    const r = fresh("setup-commit");
+    const p = join(root, "spec-setup-commit.txt");
+    writeFileSync(p, `${SPEC("true")}SETUP: echo x > gen.txt && git add gen.txt && git -c user.email=t@t -c user.name=t commit -q -m gen\n`);
+    fake("codex", "echo hi > out.txt");
+    const { report } = await laneRun({ to: "codex", specPath: p, repo: r, profile });
+    expect(report).toContain("setup made a commit in the worktree");
+    const id = /lanes\/([^/]+)\/setup\.log/.exec(report)![1];
+    expect(laneGc().join("\n")).toContain(`removed ${id}`);
+  });
+
+  test("the local setup script runs as argv, never through a shell string", () => {
+    const r = join(root, "repo $(touch pwned) `id`");
+    mkdirSync(join(r, ".orch"), { recursive: true });
+    writeFileSync(join(r, ".orch", "lane-setup"), "true\n");
+    const cmd = setupCommand({ raw: "", fields: {} }, r);
+    expect(cmd?.argv).toEqual(["sh", join(r, ".orch", "lane-setup")]);
+  });
+
+  test("the snapshot integration patch carries binary changes", async () => {
+    const r = fresh("snap-binary");
+    writeFileSync(join(r, "dirty.txt"), "dirty\n");
+    fake("codex", "printf '\\000\\001\\002' > blob.bin");
+    const { report, state } = await laneRun({ to: "codex", specPath: spec("test -f blob.bin"), repo: r, profile });
+    expect(state?.status).toBe("complete");
+    expect(report).toContain("git diff --binary --no-ext-diff --no-textconv");
+    const target = fresh("snap-binary-target");
+    writeFileSync(join(target, "dirty.txt"), "dirty\n");
+    const applied = sh(target, `git -C ${r} diff --binary --no-ext-diff --no-textconv ${state!.base} ${state!.branch} | git apply`);
+    expect(applied.status).toBe(0);
+    expect(readFileSync(join(target, "blob.bin")).equals(Buffer.from([0, 1, 2]))).toBe(true);
   });
 });

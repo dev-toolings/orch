@@ -84,7 +84,8 @@ from `$LANE_REPO`).
 
 Run `lane run --to codex|grok|claude --spec <file>` as a plain command: no
 redirection, pipe or `VAR=` prefix (under Codex, only the plain form runs
-outside the sandbox). A run takes minutes: start it in the background when
+outside the sandbox, after the operator approves it: SETUP and VERIFY run on
+the host). A run takes minutes: start it in the background when
 your harness allows it, run independent lanes in parallel, and wait for the
 report. Read only the report it prints. Do not open worker logs or terminals
 unless the report is `failed` and you need one cited excerpt.

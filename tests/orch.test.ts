@@ -103,6 +103,8 @@ describe("external workers", () => {
     expect(CLAUDE_SANDBOX.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
     expect(argv).toContain("Edit(/**)");
     expect(argv).not.toContain("Bash");
+    // no inherited settings source may widen the worker's permissions
+    expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
   });
 
   test("the read-only Claude worker stays in plan mode", () => {
@@ -111,7 +113,9 @@ describe("external workers", () => {
 
   test("install ships the Codex lead rule for lane and orch", () => {
     const rule = render(loadProfile("max20")).find((t) => t.path === ".codex/rules/orch.rules");
-    expect(rule?.content).toContain('pattern = ["lane", ["run", "review", "status", "gc"]]');
+    // lane run asks: it runs the spec's SETUP and VERIFY on the host.
+    expect(rule?.content).toMatch(/pattern = \["lane", "run"\],\n\s+decision = "prompt"/);
+    expect(rule?.content).toContain('pattern = ["lane", ["review", "status", "gc"]]');
     expect(rule?.content).toContain('pattern = ["orch", ["mem", "docs"]]');
   });
 

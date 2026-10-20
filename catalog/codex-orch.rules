@@ -4,24 +4,35 @@
 # home directory is read-only and the network is off. `lane` must write a git
 # worktree and its state under ~/.local/state/orch, and the workers it starts
 # need the network; `orch mem` and `orch docs` write their stores under the
-# home directory. These two tools run outside the sandbox without a prompt.
-# Each one isolates what it starts: lane workers run in their own worktree
-# under their own harness sandbox.
+# home directory. So these run outside the sandbox.
+#
+# `lane run` asks the operator each time: it executes the spec's SETUP and
+# VERIFY commands on the host, unconfined, so an unprompted allow would hand
+# the sandboxed lead an unrestricted shell. `lane review`, `status` and `gc`
+# run no spec command (review starts a read-only worker) and need no prompt.
 #
 # Codex matches the command's argument list: call them as plain commands
 # (no redirection, no `VAR=` prefix, no `$(...)`), or the rule does not apply.
 
 prefix_rule(
-    pattern = ["lane", ["run", "review", "status", "gc"]],
+    pattern = ["lane", "run"],
+    decision = "prompt",
+    justification = "lane run executes the spec's SETUP and VERIFY on the host, outside any sandbox: check the spec before approving",
+    match = ["lane run --to grok --spec /tmp/spec.md"],
+    not_match = ["lanes run --to grok", "lane gc"],
+)
+
+prefix_rule(
+    pattern = ["lane", ["review", "status", "gc"]],
     decision = "allow",
-    justification = "orch lane: creates a worker worktree and state outside the workspace, workers need the network",
+    justification = "orch lane: worktree and state outside the workspace, no spec command runs",
     match = [
-        "lane run --to grok --spec /tmp/spec.md",
         "lane review --base main --goal check",
         "lane gc --drop 20261020130737-codex-1-abcd",
+        "lane status",
     ],
     not_match = [
-        "lanes run --to grok",
+        "lane run --to grok --spec /tmp/spec.md",
         "lane rm -rf /",
     ],
 )

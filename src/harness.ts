@@ -32,7 +32,10 @@ export interface WorkerCall {
 // whatever would still need a prompt rather than hanging. Edit and Write are
 // allowed only under the worktree (`/` is the project root in permission
 // rules). Without the sandbox's dependencies the worker refuses to start
-// (failIfUnavailable) instead of running unconfined.
+// (failIfUnavailable) instead of running unconfined. No settings source is
+// loaded (`--setting-sources ""`): the operator's or the repository's settings
+// (excludedCommands, allowWrite, additionalDirectories, allow rules, hooks)
+// would otherwise widen what the worker may do; only the flags below apply.
 export const CLAUDE_SANDBOX = {
   sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false },
 };
@@ -69,7 +72,7 @@ export function workerArgv(
     ];
     return { argv, promptPath: opts.promptPath, stdin: false };
   }
-  const argv = ["claude", "-p", "--output-format", "json", "--disallowedTools", "Agent"];
+  const argv = ["claude", "-p", "--output-format", "json", "--setting-sources", "", "--disallowedTools", "Agent"];
   if (choice.model) argv.push("--model", choice.model);
   if (effort) argv.push("--effort", effort);
   if (opts.readOnly) argv.push("--permission-mode", "plan");
