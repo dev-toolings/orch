@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { leadArgv } from "../src/lead.ts";
+import { leadArgv, leadGuard } from "../src/lead.ts";
 import { apply, drift, plan, readManifest, uninstall } from "../src/manifest.ts";
 import { loadProfile } from "../src/profile.ts";
-import { leadPrompt, render } from "../src/render.ts";
+import { leadPrompt, render, type Target } from "../src/render.ts";
 import { doctorChecks, missingSystemPackages } from "../src/doctor.ts";
 import { CLAUDE_SANDBOX, workerArgv } from "../src/harness.ts";
 
@@ -65,9 +65,39 @@ describe("manifest", () => {
     expect(readManifest(state)?.entries.map((e) => e.path)).toEqual([".grok/agents/lead.md"]);
     expect(existsSync(join(home, ".claude", "agents", "project-auditor.md"))).toBe(true);
   });
+
+  test("upgrade removes retired files but keeps edited retired files for uninstall", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-upgrade-"));
+    const upgradeHome = join(root, "home");
+    const upgradeState = join(root, "state");
+    const oldTargets: Target[] = [
+      { path: ".orch/old.txt", kind: "file", content: "old\n" },
+      { path: ".orch/edited.txt", kind: "file", content: "before\n" },
+    ];
+    const newTargets: Target[] = [{ path: ".orch/new.txt", kind: "file", content: "new\n" }];
+
+    apply(upgradeHome, upgradeState, "test", oldTargets, plan(upgradeHome, oldTargets, null));
+    writeFileSync(join(upgradeHome, ".orch/edited.txt"), "hand edit\n");
+    apply(upgradeHome, upgradeState, "test", newTargets, plan(upgradeHome, newTargets, readManifest(upgradeState)));
+
+    expect(existsSync(join(upgradeHome, ".orch/old.txt"))).toBe(false);
+    expect(existsSync(join(upgradeHome, ".orch/edited.txt"))).toBe(true);
+    expect(readManifest(upgradeState)?.entries.map((e) => e.path)).toEqual([".orch/new.txt", ".orch/edited.txt"]);
+
+    const out = uninstall(upgradeHome, upgradeState, false);
+    expect(out).toContain("kept .orch/edited.txt (edited since install)");
+    expect(existsSync(join(upgradeHome, ".orch/new.txt"))).toBe(false);
+    expect(existsSync(join(upgradeHome, ".orch/edited.txt"))).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
 });
 
 describe("lead launch argv", () => {
+  test("a lane worker is refused before lead launch", () => {
+    expect(leadGuard({ ORCH_LANE: "1" })).toBe("lead: a lane worker cannot start a lead session");
+    expect(leadGuard({ ORCH_LANE: "0" })).toBeNull();
+  });
+
   test("Codex: lead prompt passed once as developer_instructions", () => {
     const out = leadArgv("codex", "max20");
     expect(out[0]).toBe("codex");
@@ -182,4 +212,18 @@ describe("external workers", () => {
     }
     rmSync(home, { recursive: true, force: true });
   });
+});
+
+test("project skills: one source in .agents/skills, linked for Claude and Grok", () => {
+  const root = join(import.meta.dir, "..");
+  const names = readdirSync(join(root, ".agents", "skills"));
+  expect(names.length).toBeGreaterThan(0);
+  for (const name of names) {
+    expect(existsSync(join(root, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+    for (const h of [".claude", ".grok"]) {
+      const link = join(root, h, "skills", name);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(link)).toBe(`../../.agents/skills/${name}`);
+    }
+  }
 });

@@ -17,7 +17,9 @@ export interface Profile {
   name: string;
   lead: Record<Harness, ModelChoice>;
   lanes: Record<Harness, ModelChoice>;
-  review: Record<Harness, ModelChoice & { to: Harness }>;
+  // `high` overrides model and effort for a high-risk review (data migration,
+  // security-sensitive path, public API change): `lane review --risk high`.
+  review: Record<Harness, ModelChoice & { to: Harness; high?: ModelChoice }>;
   limits: {
     max_concurrent: number;
     max_depth: number;

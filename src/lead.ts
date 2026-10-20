@@ -45,7 +45,16 @@ export function leadArgv(h: Harness, profileName?: string, extra: string[] = [])
   return out;
 }
 
+export function leadGuard(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.ORCH_LANE === "1" ? "lead: a lane worker cannot start a lead session" : null;
+}
+
 if (import.meta.main) {
+  const refusal = leadGuard();
+  if (refusal) {
+    console.error(refusal);
+    process.exit(2);
+  }
   const [h, ...rest] = process.argv.slice(2);
   if (!(HARNESSES as string[]).includes(h)) {
     console.error("usage: lead claude|codex|grok [harness args...]");

@@ -18,6 +18,10 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   (project in the repo, operator and lead under the state dir). Recall is on
   demand only: nothing is injected at launch. Workers (`ORCH_LANE=1`) never
   write.
+- Project skills live once in `.agents/skills/<name>/` (read by Codex);
+  `.claude/skills/<name>` and `.grok/skills/<name>` are relative symlinks to
+  it. Grok loads them only once the folder is trusted: `grok --trust -p
+  '/workflow list'` in the repo records it with no model turn.
 - `scripts/orca-run-teardown.sh` closes an Orca Run (worktrees, setup
   terminals, merged branches); the `operator-delegation` skill points here.
 - `src/docs.ts` keeps a local docs corpus declared in `catalog/docs.yaml`

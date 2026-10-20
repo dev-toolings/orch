@@ -46,6 +46,17 @@ describe("mem", () => {
     expect(() => addNote({ body: "worker note", scope: "project" }, worker, { state, cwd: repo })).toThrow(/workers never write/);
   });
 
+  test("same timestamp and first line still create distinct notes", () => {
+    const localState = mkdtempSync(join(tmpdir(), "orch-mem-collision-"));
+    const now = new Date("2030-02-03T04:05:06Z");
+    const first = addNote({ body: "Same heading\nfirst body", scope: "operator" }, lead("claude"), { state: localState, cwd: repo, now });
+    const second = addNote({ body: "Same heading\nsecond body", scope: "operator" }, lead("claude"), { state: localState, cwd: repo, now });
+
+    expect(second.id).toBe(`${first.id}-2`);
+    expect(listNotes(lead("claude"), { state: localState, cwd: repo, scope: "operator" }).map((n) => n.id)).toEqual(expect.arrayContaining([first.id, second.id]));
+    rmSync(localState, { recursive: true, force: true });
+  });
+
   test("recent lists newest first, so a new session can resume", () => {
     addNote({ body: "Stopped at: lane PW22 pending", scope: "project" }, lead("claude"), { state, cwd: repo, now: new Date("2030-01-01T00:00:00Z") });
     const r = recentNotes(lead("claude"), { state, cwd: repo, limit: 1 });

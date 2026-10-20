@@ -63,6 +63,16 @@ export function apply(home: string, stateDir: string, profile: string, targets: 
   if (actions.some((a) => a.op === "conflict")) throw new Error("refusing to install over conflicts");
   const prev = readManifest(stateDir);
   const created = new Set(prev?.created_dirs ?? []);
+  const targetPaths = new Set(targets.map((t) => t.path));
+  const retiredKept: Entry[] = [];
+  for (const e of prev?.entries ?? []) {
+    if (targetPaths.has(e.path)) continue;
+    const abs = join(home, e.path);
+    const cur = current(abs);
+    if (!cur) continue;
+    if (cur.sha256 === e.sha256) rmSync(abs, { force: true });
+    else retiredKept.push(e);
+  }
   for (const t of targets) {
     const abs = join(home, t.path);
     let d = dirname(abs);
@@ -88,7 +98,10 @@ export function apply(home: string, stateDir: string, profile: string, targets: 
     version: 1,
     profile,
     installed_at: new Date().toISOString(),
-    entries: targets.map((t) => ({ path: t.path, kind: t.kind, sha256: sha(t.content) })),
+    entries: [
+      ...targets.map((t) => ({ path: t.path, kind: t.kind, sha256: sha(t.content) })),
+      ...retiredKept,
+    ],
     created_dirs: [...created],
   };
   mkdirSync(stateDir, { recursive: true });

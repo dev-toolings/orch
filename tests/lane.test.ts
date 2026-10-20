@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bound, laneGc, laneRun, setupCommand, SNAPSHOT_LIMITS, statusPaths } from "../src/lane.ts";
+import { bound, laneGc, laneReview, laneRun, setupCommand, SNAPSHOT_LIMITS, statusPaths } from "../src/lane.ts";
 import { loadProfile, type Profile } from "../src/profile.ts";
 import { releaseSlot, reserveSlot } from "../src/slots.ts";
 
@@ -12,6 +12,9 @@ let repo: string;
 let bin: string;
 const savedPath = process.env.PATH;
 const savedHome = process.env.HOME;
+// Hermetic: these tests may run inside a lane VERIFY, where ORCH_LANE=1 is
+// inherited and would trip the depth guard of every laneRun below.
+const savedLane = process.env.ORCH_LANE;
 const profile: Profile = { ...loadProfile("max20"), limits: { max_concurrent: 5, max_depth: 1, report_max_bytes: 4096, timeout_seconds: 30 } };
 
 const SPEC = (verify: string) => `OBJECTIVE: create out.txt
@@ -40,6 +43,7 @@ function spec(verify: string) {
 }
 
 beforeAll(() => {
+  delete process.env.ORCH_LANE;
   root = mkdtempSync(join(tmpdir(), "lane-test-"));
   repo = join(root, "repo");
   bin = join(root, "bin");
@@ -56,6 +60,7 @@ beforeAll(() => {
 
 afterAll(() => {
   process.env.PATH = savedPath;
+  if (savedLane !== undefined) process.env.ORCH_LANE = savedLane;
   process.env.HOME = savedHome;
   rmSync(root, { recursive: true, force: true });
 });
@@ -256,6 +261,64 @@ describe("lane depth", () => {
     }
     expect(sh(repo, "git branch --list 'lane/*'").stdout).toBe(before);
   });
+
+  test("a worker (ORCH_LANE=1) cannot start a review or launch its harness", async () => {
+    const marker = join(root, "review-depth-launched");
+    fake("codex", `touch ${marker}`);
+    process.env.ORCH_LANE = "1";
+    try {
+      const report = await laneReview({ from: "codex", to: "codex", base: "HEAD", goal: "review", repo, profile });
+      expect(report).toContain("LANE REVIEW\nSTATUS: refused-by-lane");
+      expect(report).toContain("REASON: max_depth");
+    } finally {
+      delete process.env.ORCH_LANE;
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("a review is unavailable while all slots are held", async () => {
+    const marker = join(root, "review-slot-launched");
+    fake("codex", `touch ${marker}`);
+    const held: number[] = [];
+    try {
+      for (let i = 0; i < profile.limits.max_concurrent; i++) held.push(reserveSlot(process.env.ORCH_STATE!, profile.limits.max_concurrent, `held-${i}`)!);
+      const report = await laneReview({ from: "codex", to: "codex", base: "HEAD", goal: "review", repo, profile });
+      expect(report).toBe(`LANE REVIEW\nSTATUS: unavailable\nREASON: ${profile.limits.max_concurrent} lanes already running\n`);
+    } finally {
+      for (const slot of held) releaseSlot(process.env.ORCH_STATE!, slot);
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
+test("review defaults --from to ORCH_HARNESS when it is valid", () => {
+  fake("claude", "echo review");
+  const result = spawnSync(process.execPath, ["src/lane.ts", "review", "--base", "HEAD", "--goal", "review"], {
+    cwd: join(import.meta.dir, ".."),
+    encoding: "utf8",
+    env: { ...process.env, ORCH_HARNESS: "codex" },
+  });
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("REVIEWER: claude · opus");
+});
+
+test("review --to takes the model of an entry aimed at that harness, never another harness's id", async () => {
+  const argvFile = join(root, "review-to-argv");
+  fake("codex", `echo "$@" > ${argvFile}`);
+  const report = await laneReview({ from: "codex", to: "codex", base: "HEAD", goal: "review", repo, profile });
+  expect(report).toContain("REVIEWER: codex · gpt-6-luna");
+  expect(readFileSync(argvFile, "utf8")).not.toContain("opus");
+});
+
+test("review risk picks the reviewer: normal is the base choice, high its override", async () => {
+  const argvFile = join(root, "review-argv");
+  fake("codex", `echo "$@" > ${argvFile}`);
+  const normal = await laneReview({ from: "claude", base: "HEAD", goal: "review", repo, profile });
+  expect(normal).toContain("REVIEWER: codex · gpt-6-luna · effort xhigh · risk normal");
+  expect(readFileSync(argvFile, "utf8")).toContain("gpt-6-luna");
+  const high = await laneReview({ from: "claude", base: "HEAD", goal: "review", repo, profile, risk: "high" });
+  expect(high).toContain("REVIEWER: codex · gpt-6.1-sol · effort medium · risk high");
+  expect(readFileSync(argvFile, "utf8")).toContain("gpt-6.1-sol");
 });
 
 describe("snapshot and setup hardening (review findings)", () => {
@@ -296,12 +359,63 @@ describe("snapshot and setup hardening (review findings)", () => {
     const r = fresh("snap-assume");
     sh(r, "git update-index --assume-unchanged a.txt");
     writeFileSync(join(r, "a.txt"), "edited under assume-unchanged\n");
-    writeFileSync(join(r, "other.txt"), "makes the tree dirty\n");
     fake("codex", "echo hi > out.txt");
     const { state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
     expect(state?.status).toBe("complete");
     expect(readFileSync(join(state!.worktree, "a.txt"), "utf8")).toBe("edited under assume-unchanged\n");
     expect(sh(r, "git ls-files -v a.txt").stdout.trim()).toBe("h a.txt");
+  });
+
+  test("an edit to a file both assume-unchanged and skip-worktree reaches the snapshot", async () => {
+    const r = fresh("snap-both-flags");
+    sh(r, "git update-index --assume-unchanged a.txt && git update-index --skip-worktree a.txt");
+    expect(sh(r, "git ls-files -v a.txt").stdout.trim()).toBe("s a.txt");
+    writeFileSync(join(r, "a.txt"), "edited under both flags\n");
+    fake("codex", "echo hi > out.txt");
+    const { state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
+    expect(state?.status).toBe("complete");
+    expect(readFileSync(join(state!.worktree, "a.txt"), "utf8")).toBe("edited under both flags\n");
+  });
+
+  test("hidden edits count toward the snapshot budget next to visible ones", async () => {
+    const r = fresh("snap-budget-hidden");
+    sh(r, "git update-index --assume-unchanged a.txt");
+    writeFileSync(join(r, "a.txt"), "hidden edit\n");
+    writeFileSync(join(r, "new.txt"), "visible\n");
+    const saved = SNAPSHOT_LIMITS.files;
+    SNAPSHOT_LIMITS.files = 1;
+    try {
+      expect((await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile })).report).toContain("(2 files");
+    } finally {
+      SNAPSHOT_LIMITS.files = saved;
+    }
+  });
+
+  test("gc keeps a worktree with untracked work even under status.showUntrackedFiles=no", async () => {
+    const r = fresh("gc-untracked");
+    fake("codex", "true");
+    const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile });
+    expect(state?.status).toBe("noop");
+    sh(r, "git config status.showUntrackedFiles no");
+    writeFileSync(join(state!.worktree, "work.txt"), "unsaved work\n");
+    expect(laneGc()).toContain(`kept ${state!.id} (dirty worktree)`);
+    expect(existsSync(join(state!.worktree, "work.txt"))).toBe(true);
+  });
+
+  test("a rejecting pre-commit hook fails the lane and gc keeps its dirty worktree", async () => {
+    const r = fresh("commit-hook");
+    const hook = join(r, ".git", "hooks", "pre-commit");
+    writeFileSync(hook, "#!/bin/sh\necho pre-commit rejected >&2\nexit 1\n");
+    chmodSync(hook, 0o755);
+    fake("codex", "echo hi > out.txt");
+    const { report, state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
+    expect(state?.status).toBe("failed");
+    expect(state?.reason).toContain("pre-commit rejected");
+    expect(report).toContain("STATUS: failed");
+    expect(report).toContain("REASON: git commit failed:");
+    expect(report).toContain("pre-commit rejected");
+    expect(laneGc()).toContain(`kept ${state!.id} (dirty worktree)`);
+    expect(existsSync(state!.worktree)).toBe(true);
   });
 
   test("a dirty submodule with a non-ASCII name is refused too", async () => {

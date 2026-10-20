@@ -103,9 +103,10 @@ A spec you cannot finish writing means the decision is not made: make it.
 
 ## Review
 
-Ask for a cross-family review (`lane review --diff <base>`) only for a data
-migration, a security-sensitive path, a public API change, or when the
-operator asks. Otherwise verify the diff yourself.
+Ask for a cross-family review (`lane review --base <base> --goal "<goal>"`)
+only for a data migration, a security-sensitive path, a public API change
+(add `--risk high`: a stronger reviewer), or when the operator asks (default
+risk). Otherwise verify the diff yourself.
 
 ## Reporting to the operator
 

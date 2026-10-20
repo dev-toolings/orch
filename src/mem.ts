@@ -80,8 +80,15 @@ export function addNote(
   };
   const dir = scopeDir(input.scope, opts);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${note.id}.md`), render(note));
-  return note;
+  for (let suffix = 1; ; suffix++) {
+    const candidate = suffix === 1 ? note : { ...note, id: `${note.id}-${suffix}` };
+    try {
+      writeFileSync(join(dir, `${candidate.id}.md`), render(candidate), { flag: "wx" });
+      return candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
 }
 
 function render(n: Note): string {

@@ -1,7 +1,8 @@
 node_modules/
 .sandbox/
 .ref/
-.grok/
+.grok/*
+!.grok/skills/
 *.log
 .orch/
 .ctx/

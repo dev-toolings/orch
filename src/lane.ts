@@ -14,9 +14,9 @@ import { missingFields, parseSpec, type Spec } from "./spec.ts";
 
 export const stateDir = () => process.env.ORCH_STATE ?? join(homedir(), ".local", "state", "orch");
 
-function git(cwd: string, ...args: string[]): { ok: boolean; out: string } {
+function git(cwd: string, ...args: string[]): { ok: boolean; out: string; err: string } {
   const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
-  return { ok: r.status === 0, out: (r.stdout ?? "").trim() };
+  return { ok: r.status === 0, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
 }
 
 // Snapshot budget: past this, `git add -A` would copy a dataset into the
@@ -59,59 +59,76 @@ export function workerBase(repo: string, dir: string): Base {
   if (!head.ok) return { ok: false, reason: "no HEAD commit to start from" };
   const entries = statusEntries(repo);
   if (entries === null) return { ok: false, reason: "git status failed in the caller's repository" };
-  if (!entries.length) return { ok: true, sha: head.out };
-
-  const paths = statusPaths(entries);
-  // -z: raw paths, comparable with status paths whatever their characters.
-  const staged = spawnSync("git", ["-C", repo, "ls-files", "-s", "-z"], { encoding: "utf8", timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
-  if (staged.status !== 0) return { ok: false, reason: "git ls-files failed in the caller's repository" };
-  const gitlinks = new Set((staged.stdout ?? "").split("\0").filter((l) => l.startsWith("160000 ")).map((l) => l.slice(l.indexOf("\t") + 1)));
-  const dirtySub = paths.filter((path) => gitlinks.has(path));
-  if (dirtySub.length) return { ok: false, reason: `dirty submodule ${dirtySub.join(", ")}: commit inside it first` };
-
-  // Budget over everything the snapshot would copy: tracked edits and untracked files.
-  let bytes = 0;
-  for (const f of paths) {
-    try {
-      const st = statSync(join(repo, f));
-      if (st.isFile()) bytes += st.size;
-    } catch {}
-  }
-  if (paths.length > SNAPSHOT_LIMITS.files || bytes > SNAPSHOT_LIMITS.bytes) {
-    return { ok: false, reason: `changes too large to snapshot (${paths.length} files, ${Math.round(bytes / 1048576)} MB): gitignore them or commit` };
-  }
 
   const index = join(dir, "snapshot.index");
   const callerIndex = resolve(repo, git(repo, "rev-parse", "--git-path", "index").out);
   const env = { ...process.env, GIT_INDEX_FILE: index, GIT_OPTIONAL_LOCKS: "0" };
+  const run = (args: string[], input?: string) =>
+    spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env, input, timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
   const g = (...args: string[]) => {
-    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env, timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
+    const r = run(args);
     return r.status === 0 ? (r.stdout ?? "").trim() : null;
   };
   const short = head.out.slice(0, 12);
   try {
     if (existsSync(callerIndex)) copyFileSync(callerIndex, index);
     else if (g("read-tree", "HEAD") === null) return { ok: false, reason: "could not seed the snapshot index" };
-    // The copied index keeps assume-unchanged and skip-worktree bits, which make
-    // `add -A` skip a present file's edits. Clear them in the copy only; a
-    // skip-worktree entry absent from disk (sparse checkout) stays as is.
-    const tagged = spawnSync("git", ["-C", repo, "ls-files", "-v", "-z"], { encoding: "utf8", env, timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
+
+    // `git status` never shows edits to files marked assume-unchanged or
+    // skip-worktree, and the copied index keeps those bits, which make `add -A`
+    // skip them. Clear them in the copy only, then list such edits so they go
+    // through the same submodule and budget checks as visible ones. `ls-files
+    // -v` tags skip-worktree "S" and assume-unchanged in lowercase, so "s" is
+    // both. A skip-worktree entry absent from disk (sparse checkout) stays.
+    const tagged = run(["ls-files", "-v", "-z"]);
+    if (tagged.status !== 0) return { ok: false, reason: "git ls-files failed in the caller's repository" };
+    const hidden = new Set<string>();
     const assumed: string[] = [];
     const skipped: string[] = [];
     for (const e of (tagged.stdout ?? "").split("\0").filter(Boolean)) {
       const tag = e[0];
       const path = e.slice(2);
-      if (tag === "S") {
-        if (existsSync(join(repo, path))) skipped.push(path);
-      } else if (tag !== tag.toUpperCase()) assumed.push(path);
+      const skip = tag.toUpperCase() === "S" && existsSync(join(repo, path));
+      const assume = tag !== tag.toUpperCase();
+      if (skip) skipped.push(path);
+      if (assume) assumed.push(path);
+      if (skip || assume) hidden.add(path);
     }
     const clear = (flag: string, list: string[]) =>
-      !list.length || spawnSync("git", ["-C", repo, "update-index", flag, "-z", "--stdin"], {
-        input: list.join("\0") + "\0", env, timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL",
-      }).status === 0;
+      !list.length || run(["update-index", flag, "-z", "--stdin"], list.join("\0") + "\0").status === 0;
     if (!clear("--no-assume-unchanged", assumed) || !clear("--no-skip-worktree", skipped)) {
       return { ok: false, reason: "could not clear assume-unchanged or skip-worktree bits in the snapshot index" };
     }
+    let hiddenEdits: string[] = [];
+    if (hidden.size) {
+      run(["update-index", "-q", "--refresh"]); // stale stat data alone is not an edit
+      const changed = run(["diff-files", "--name-only", "-z"]);
+      if (changed.status !== 0) return { ok: false, reason: "git diff-files failed in the caller's repository" };
+      hiddenEdits = (changed.stdout ?? "").split("\0").filter((path) => path && hidden.has(path));
+    }
+    const paths = [...new Set([...statusPaths(entries), ...hiddenEdits])];
+    if (!paths.length) return { ok: true, sha: head.out };
+
+    // -z: raw paths, comparable with status paths whatever their characters.
+    const staged = run(["ls-files", "-s", "-z"]);
+    if (staged.status !== 0) return { ok: false, reason: "git ls-files failed in the caller's repository" };
+    const gitlinks = new Set((staged.stdout ?? "").split("\0").filter((l) => l.startsWith("160000 ")).map((l) => l.slice(l.indexOf("\t") + 1)));
+    const dirtySub = paths.filter((path) => gitlinks.has(path));
+    if (dirtySub.length) return { ok: false, reason: `dirty submodule ${dirtySub.join(", ")}: commit inside it first` };
+
+    // Budget over everything the snapshot would copy: tracked edits, hidden
+    // edits and untracked files.
+    let bytes = 0;
+    for (const f of paths) {
+      try {
+        const st = statSync(join(repo, f));
+        if (st.isFile()) bytes += st.size;
+      } catch {}
+    }
+    if (paths.length > SNAPSHOT_LIMITS.files || bytes > SNAPSHOT_LIMITS.bytes) {
+      return { ok: false, reason: `changes too large to snapshot (${paths.length} files, ${Math.round(bytes / 1048576)} MB): gitignore them or commit` };
+    }
+
     const tree = g("add", "-A") !== null ? g("write-tree") : null;
     const sha = tree && g("-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit-tree", tree, "-p", head.out,
       "-m", `lane: snapshot of working tree over ${short}`);
@@ -192,6 +209,7 @@ export interface LaneState {
   worktree: string;
   status: Status;
   changed: boolean;
+  reason?: string;
   usage: Usage;
   started: string;
   ended: string;
@@ -209,6 +227,12 @@ export function bound(report: string, maxBytes: number): string {
   return buf.subarray(0, maxBytes - Buffer.byteLength(note)).toString("utf8").replace(/�+$/, "") + note;
 }
 
+function depthRefusal(label: "LANE REPORT" | "LANE REVIEW", maxDepth: number): string | null {
+  return process.env.ORCH_LANE === "1"
+    ? `${label}\nSTATUS: refused-by-lane\nREASON: max_depth ${maxDepth}: a lane worker cannot start a lane\n`
+    : null;
+}
+
 export async function laneRun(opts: {
   to: Harness;
   specPath: string;
@@ -218,12 +242,8 @@ export async function laneRun(opts: {
   channel?: string;
 }): Promise<{ report: string; state?: LaneState }> {
   const p = opts.profile;
-  // Depth 1: a worker runs with ORCH_LANE=1 (workerEnv) and may not start a
-  // lane of its own, whatever its harness sandbox would allow. This is what
-  // stops a worker from delegating in a loop.
-  if (process.env.ORCH_LANE === "1") {
-    return { report: `LANE REPORT\nSTATUS: refused-by-lane\nREASON: max_depth ${p.limits.max_depth}: a lane worker cannot start a lane\n` };
-  }
+  const depth = depthRefusal("LANE REPORT", p.limits.max_depth);
+  if (depth) return { report: depth };
   const spec = parseSpec(readFileSync(opts.specPath, "utf8"));
   if (opts.to === "grok" && !grokProfileInstalled()) {
     return { report: "LANE REPORT\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n" };
@@ -329,11 +349,21 @@ export async function laneRun(opts: {
     }
 
     // Without a reliable status the change cannot be measured: never report it as noop.
-    const status = after === null ? "failed" : classify({ ...run, changed, verifyOk, log });
+    let status: Status = after === null ? "failed" : classify({ ...run, changed, verifyOk, log });
+    let reason = after === null ? "git status failed in the worktree after the worker" : undefined;
     if (changed && dirty) {
-      git(wt, "add", "-A");
-      git(wt, "-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit", "-q", "-m",
-        `lane ${id}: ${(spec.fields.OBJECTIVE ?? "").split("\n")[0].slice(0, 60)}`);
+      const added = git(wt, "add", "-A");
+      if (!added.ok) {
+        status = "failed";
+        reason = `git add failed:\n${tail(added.err || added.out, 12) || "no error output"}`;
+      } else {
+        const committed = git(wt, "-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit", "-q", "-m",
+          `lane ${id}: ${(spec.fields.OBJECTIVE ?? "").split("\n")[0].slice(0, 60)}`);
+        if (!committed.ok) {
+          status = "failed";
+          reason = `git commit failed:\n${tail(committed.err || committed.out, 12) || "no error output"}`;
+        }
+      }
     }
     const stat = changed ? tail(git(wt, "diff", "--stat", base, "HEAD").out, 12) : "none";
     const { message, usage } = parseWorkerOutput(opts.to, log, last);
@@ -342,6 +372,7 @@ export async function laneRun(opts: {
 
     const state: LaneState = {
       id, to: opts.to, repo, base, branch, worktree: wt, status, changed, usage, started, ended: new Date().toISOString(),
+      reason,
     };
     writeFileSync(join(dir, "state.json"), JSON.stringify(state, null, 2));
 
@@ -349,7 +380,7 @@ export async function laneRun(opts: {
       "LANE REPORT",
       `LANE: ${opts.to} · ${model} · effort ${effort} · ${channel}`,
       `STATUS: ${status}`,
-      after === null ? "REASON: git status failed in the worktree after the worker" : "",
+      reason ? `REASON: ${reason}` : "",
       `ID: ${id}`,
       `BASE: ${base} (${b.snapshotOf ? `snapshot of dirty tree over HEAD ${b.snapshotOf}` : "HEAD"})`,
       `BRANCH: ${branch}`,
@@ -371,33 +402,50 @@ export async function laneRun(opts: {
   }
 }
 
-export async function laneReview(opts: { from: Harness; to?: Harness; base: string; goal: string; repo: string; profile: Profile }) {
-  const rc = opts.profile.review[opts.from];
-  const to = opts.to ?? rc.to;
+export async function laneReview(opts: { from: Harness; to?: Harness; base: string; goal: string; repo: string; profile: Profile; risk?: "normal" | "high" }) {
+  const depth = depthRefusal("LANE REVIEW", opts.profile.limits.max_depth);
+  if (depth) return depth;
+  const risk = opts.risk ?? "normal";
+  const fromChoice = opts.profile.review[opts.from];
+  const to = opts.to ?? fromChoice.to;
+  // A model id belongs to one harness: with --to, take the choice of a review
+  // entry aimed at that harness, else let the harness pick its own model.
+  const review = Object.values(opts.profile.review);
+  const entry = to === fromChoice.to ? fromChoice : review.find((r) => r.to === to) ?? { to };
+  const { high, ...normal } = entry;
+  const rc = risk === "high" && high ? { ...normal, ...high } : normal;
   if (to === "grok" && !grokProfileInstalled()) return "LANE REVIEW\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n";
   const grokBin = to === "grok" ? pinnedGrok() : undefined;
   if (grokBin === null) return "LANE REVIEW\nSTATUS: unavailable\nREASON: grok not found on PATH\n";
-  const dir = join(stateDir(), "reviews", `${Date.now()}-${to}`);
-  mkdirSync(dir, { recursive: true });
-  chmodSync(dir, 0o700);
-  const promptPath = join(dir, "prompt.txt");
-  writeFileSync(promptPath, `${REVIEW_PREAMBLE}Review the changes from ${opts.base} to the working tree of this repository (git diff ${opts.base}) against this goal:
+  const sd = stateDir();
+  const id = `${Date.now()}-${to}-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;
+  const slot = reserveSlot(sd, opts.profile.limits.max_concurrent, id);
+  if (slot === null) return `LANE REVIEW\nSTATUS: unavailable\nREASON: ${opts.profile.limits.max_concurrent} lanes already running\n`;
+  try {
+    const dir = join(sd, "reviews", id);
+    mkdirSync(dir, { recursive: true });
+    chmodSync(dir, 0o700);
+    const promptPath = join(dir, "prompt.txt");
+    writeFileSync(promptPath, `${REVIEW_PREAMBLE}Review the changes from ${opts.base} to the working tree of this repository (git diff ${opts.base}) against this goal:
 ${opts.goal}
 
 Check that the change does what was asked, nothing missing, nothing unasked smuggled in, and name any risk.
 Answer under 300 words: first line "VERDICT: ship | fix-first | rethink", then numbered findings with file and fix.
 `);
-  const lastPath = join(dir, "last.txt");
-  const logPath = join(dir, "worker.log");
-  const call = workerArgv(to, rc, { cwd: opts.repo, promptPath, readOnly: true, lastMessagePath: lastPath, bin: grokBin });
-  const run = await runLogged(call.argv, {
-    cwd: opts.repo, logPath, stdinPath: call.stdin ? promptPath : undefined,
-    timeoutMs: opts.profile.limits.timeout_seconds * 1000, env: workerEnv(),
-  });
-  const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
-  const { message, usage } = parseWorkerOutput(to, log, existsSync(lastPath) ? readFileSync(lastPath, "utf8") : "");
-  const head = `REVIEW REPORT\nREVIEWER: ${to} · ${rc.model ?? "inherited"}\nEXIT: ${run.code}${run.timedOut ? " (timeout)" : ""}\nUSAGE: ${fmtUsage(usage)}\nLOG: ${logPath}\n`;
-  return bound(`${head}${message.trim()}\n`, opts.profile.limits.report_max_bytes);
+    const lastPath = join(dir, "last.txt");
+    const logPath = join(dir, "worker.log");
+    const call = workerArgv(to, rc, { cwd: opts.repo, promptPath, readOnly: true, lastMessagePath: lastPath, bin: grokBin });
+    const run = await runLogged(call.argv, {
+      cwd: opts.repo, logPath, stdinPath: call.stdin ? promptPath : undefined,
+      timeoutMs: opts.profile.limits.timeout_seconds * 1000, env: workerEnv(),
+    });
+    const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+    const { message, usage } = parseWorkerOutput(to, log, existsSync(lastPath) ? readFileSync(lastPath, "utf8") : "");
+    const head = `REVIEW REPORT\nREVIEWER: ${to} · ${rc.model ?? "inherited"} · effort ${rc.effort ?? "default"} · risk ${risk}\nEXIT: ${run.code}${run.timedOut ? " (timeout)" : ""}\nUSAGE: ${fmtUsage(usage)}\nLOG: ${logPath}\n`;
+    return bound(`${head}${message.trim()}\n`, opts.profile.limits.report_max_bytes);
+  } finally {
+    releaseSlot(sd, slot);
+  }
 }
 
 export function listLanes(): LaneState[] {
@@ -425,6 +473,16 @@ export function laneGc(drop?: string): string[] {
     }
   }
   for (const s of listLanes()) {
+    // Config-independent status (untracked files and submodules always
+    // shown). A worktree that cannot be inspected is kept too: only an
+    // explicit --drop forces the removal of unknown or uncommitted work.
+    if (s.id !== drop && existsSync(s.worktree)) {
+      const st = statusEntries(s.worktree);
+      if (st === null || st.length) {
+        out.push(`kept ${s.id} (${st === null ? "worktree status failed" : "dirty worktree"})`);
+        continue;
+      }
+    }
     const merged = git(s.repo, "merge-base", "--is-ancestor", s.branch, "HEAD").ok;
     const squashed = s.changed && git(s.repo, "diff", "--quiet", "HEAD", s.branch, "--").ok;
     if (!(merged || squashed || !s.changed || s.id === drop)) {
@@ -446,7 +504,7 @@ async function main() {
     options: {
       to: { type: "string" }, spec: { type: "string" }, effort: { type: "string" }, profile: { type: "string" },
       repo: { type: "string" }, channel: { type: "string" }, base: { type: "string" }, goal: { type: "string" },
-      from: { type: "string" }, drop: { type: "string" },
+      from: { type: "string" }, drop: { type: "string" }, risk: { type: "string" },
     },
   });
   const profile = loadProfile(values.profile);
@@ -457,9 +515,13 @@ async function main() {
     const { report } = await laneRun({ to: values.to, specPath: values.spec, repo, profile, effort: values.effort, channel: values.channel });
     process.stdout.write(report);
   } else if (cmd === "review") {
-    const from = isHarness(values.from) ? values.from : "claude";
-    if (!values.base || !values.goal) throw new Error('usage: lane review --base <ref> --goal "<goal>" [--from h] [--to h]');
-    process.stdout.write(await laneReview({ from, to: isHarness(values.to) ? values.to : undefined, base: values.base, goal: values.goal, repo, profile }));
+    const envHarness = process.env.ORCH_HARNESS;
+    const from = isHarness(values.from) ? values.from : isHarness(envHarness) ? envHarness : "claude";
+    const usage = 'usage: lane review --base <ref> --goal "<goal>" [--risk normal|high] [--from h] [--to h]';
+    if (!values.base || !values.goal) throw new Error(usage);
+    if (values.risk !== undefined && values.risk !== "normal" && values.risk !== "high") throw new Error(usage);
+    const risk = values.risk === "high" ? "high" : "normal";
+    process.stdout.write(await laneReview({ from, to: isHarness(values.to) ? values.to : undefined, base: values.base, goal: values.goal, repo, profile, risk }));
   } else if (cmd === "status") {
     for (const s of listLanes()) console.log(`${s.id}  ${s.status}  ${s.branch}  ${fmtUsage(s.usage)}`);
   } else if (cmd === "gc") {
