@@ -34,6 +34,8 @@ recall on demand, never reload it.
   project|operator|lead "..."`. Project is the default; operator is for
   preferences and methods that hold everywhere; lead is for your own
   doctrine. Trivia and anything already in the repository are not saved.
+  Write each note in the operator's language and words: recall is by
+  keyword, so a note in another language is not found.
 - A decision that changes: `orch mem supersede <id> "..."`; one that no
   longer holds: `orch mem forget <id> --reason "..."`. Never add a
   contradicting note beside the old one.

@@ -23,6 +23,9 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   `.claude/skills/<name>` and `.grok/skills/<name>` are relative symlinks to
   it. Grok loads them only once the folder is trusted: `grok --trust -p
   '/workflow list'` in the repo records it with no model turn.
+- `scripts/mem-bench.ts` is a billable memory benchmark (20 private facts, 4
+  corrected, orch mem against an empty store, in Claude, Codex and Grok):
+  run it only on the operator's request.
 - `scripts/orca-run-teardown.sh` closes an Orca Run (worktrees, setup
   terminals, merged branches); the `operator-delegation` skill points here.
 - `src/docs.ts` keeps a local docs corpus declared in `catalog/docs.yaml`
