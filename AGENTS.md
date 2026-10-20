@@ -6,8 +6,11 @@ own file-based memory (`orch mem`). No external memory system or launcher.
 - `catalog/lead.md` is the single lead prompt for all three harnesses. Keep it
   short, stable (no dates or variables) and in English: it is a cached prefix.
 - `src/lane.ts` runs one task headless in a git worktree and prints a bounded
-  report. It must never call a model itself and never forward the caller's
-  environment beyond the allowlist in `src/proc.ts`.
+  report. In a local Orca workspace it creates a child worktree and an OSC
+  status observer terminal; the worker still uses `src/proc.ts`, never an
+  Orca launcher. It must never call a model itself or forward the caller's
+  environment beyond that allowlist. GC closes Orca terminals and removes
+  their worktree through Orca, retaining state when cleanup is unconfirmed.
 - `src/orch.ts` installs only what `src/render.ts` lists and records it in a
   manifest; uninstall removes exactly that and keeps edited files.
 - `src/lead.ts` starts the harness binary directly with the lead profile:

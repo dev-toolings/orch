@@ -316,3 +316,74 @@ par `bun src/cli.ts` et s'expose via `bin` + `bun link`.
   d'un autre dépôt : je ne la touche pas. `~/.grok/bin/grok` marche.
 - donvito : `sandbox_mode` par agent est sans effet selon la doc Codex
   (dépôt tiers, rien à faire chez nous hormis ne pas reproduire l'erreur).
+
+## Lane Orca channel decision (implemented)
+
+Root cause: lane registered neither its Git worktree nor its worker with
+Orca. The same implementation affected development and installed lanes.
+Evidence is pinned to [stablyai/orca v1.4.229](https://github.com/stablyai/orca/tree/v1.4.229),
+commit `a0cd1644f320f1327f7495650a816111b495f3cd`, matching the installed CLI.
+
+- **Hierarchy:** [CLI parent resolution, src/cli/handlers/worktree.ts:140-175](https://github.com/stablyai/orca/blob/v1.4.229/src/cli/handlers/worktree.ts#L140-L175)
+  considers an explicit parent, `ORCA_TERMINAL_HANDLE`, environment workspace
+  and cwd. [Runtime resolution:123-163](https://github.com/stablyai/orca/blob/v1.4.229/src/main/runtime/runtime-worktree-lineage-resolution.ts#L123-L163)
+  records explicit lineage. Worktree nesting and pane-level agent children
+  are separate: [agent row orchestration context:143-154](https://github.com/stablyai/orca/blob/v1.4.229/src/shared/agent-status-types.ts#L143-L154),
+  [sidebar agent count:354-358](https://github.com/stablyai/orca/blob/v1.4.229/src/renderer/src/components/sidebar/WorktreeCardAgents.tsx#L354-L358).
+- **Identity/state:** [published-pane-agent-identity.ts:28-62](https://github.com/stablyai/orca/blob/v1.4.229/src/shared/published-pane-agent-identity.ts#L28-L62)
+  resolves hook, process, launch and title evidence; `ORCA_*` alone is not
+  an agent registration. [agent-headless-command.ts:18-39](https://github.com/stablyai/orca/blob/v1.4.229/src/shared/agent-headless-command.ts#L18-L39)
+  filters Claude print mode. Calling the tag's recognizer locally returned
+  null for `claude -p`, but codex/grok for `codex exec`/`grok --prompt-file`.
+  Process recognition alone cannot supply trustworthy task completion.
+  [OSC 9999 parser:5-63](https://github.com/stablyai/orca/blob/v1.4.229/src/shared/agent-status-osc.ts#L5-L63)
+  and [PTY status attribution:89-176](https://github.com/stablyai/orca/blob/v1.4.229/src/main/runtime/terminal/output/terminal-derived-agent-facts.ts#L89-L176)
+  accept explicit state and attribute it to the pane/worktree, without a TUI.
+- **Runs/relay:** [orchestration docs:23-87](https://github.com/stablyai/orca/blob/v1.4.229/docs/site/content/docs/cli/orchestration.mdx#L23-L87)
+  define Run namespaces, worker-start, bounded worker-read, mailbox check,
+  dispatch-scoped `send --type worker_done --outcome`, and archive/release.
+  [CLI transport:31-107](https://github.com/stablyai/orca/blob/v1.4.229/src/cli/runtime/transport.ts#L31-L107)
+  requires a reachable runtime socket. The historical missing relay report
+  is consistent with transport failure, not evidence of worker completion.
+- **Alternatives/cleanup:** [repo visibility API:23-33](https://github.com/stablyai/orca/blob/v1.4.229/src/cli/specs/repo.ts#L23-L33)
+  can show external worktrees, but does not register an agent/status. No
+  dedicated public external-agent registration verb was found in CLI help.
+  OSC is an implementation protocol, not a promised public API.
+  [Setup/default tabs:64-119](https://github.com/stablyai/orca/blob/v1.4.229/src/main/effective-hook-config.ts#L64-L119)
+  honor `skip`; [removal:283-296](https://github.com/stablyai/orca/blob/v1.4.229/src/main/runtime/rpc/methods/worktree.ts#L283-L296)
+  can acknowledge asynchronous deletion.
+
+| Option | Assessment |
+|---|---|
+| (a) Orca child + headless worker in PTY | Preserves output formats, but needs an environment reset and a second timeout/process supervisor; Claude identity is not automatic. |
+| (b) `worktree create --agent --prompt` | Visible interactive agent, but Orca owns launch/settings; existing confinement flags, JSON usage and bounded completion are not preserved by this API. |
+| (c) Run + `worker-start` | Adds durable mail and dispatch lifecycle; still uses Orca launch policy and requires worker completion mail through the relay. |
+| (d) Orca child + status-only observer PTY | Chosen: visibility with the unchanged headless worker execution contract. |
+
+Create with explicit caller parent, snapshot SHA and `--setup skip`, then
+rename the branch to `lane/<id>`. Close the newly created idle terminals and
+start one observer with `env -i` and the existing allowlist. It publishes
+`working` while setup/worker/VERIFY run, then `done` plus the bounded report;
+failure remains explicit in the report. The real worker still uses
+`workerArgv`, `workerEnv`, `runLogged`, `ORCH_LANE=1`, and the original
+sandbox, timeout, usage, VERIFY and ACCEPT spec handling.
+
+Auto and explicit `orca` fall back headless when local parent/runtime
+discovery fails, including absent CLI/relay; explicit `headless` never calls
+Orca. Observer failure also leaves exactly one headless worker. A lost create
+reply is reconciled by unique name, or fails closed with a durable cleanup
+record. GC never replaces Orca removal with raw Git removal, never drops an
+active lane, and retains records on unconfirmed/asynchronous cleanup.
+
+Losses: no interactive worker input, Run mailbox, per-tool state or remote
+Orca support. OSC compatibility must be rechecked after Orca upgrades.
+The terminal represents lane execution, not a resumable provider session.
+
+Verification: CLI help and worktree list/current/ps probes; one throwaway
+child with two terminals, no model. `terminal show` returned
+`agentIdentity: claude`; `worktree ps` returned the exact parent and an agent
+transition from `working` to `done`, retained after script exit. Both
+terminals, worktree and branch were removed. Fake-Orca tests exercise the
+protocol, dirty snapshot, environment isolation, fallback, timeout, lost
+create reply and GC failures without touching real HOME. `make check` is
+the regression gate; billable `make smoke` remains to run separately.

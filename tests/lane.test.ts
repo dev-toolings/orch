@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bound, laneGc, laneReview, laneRun, setupCommand, SNAPSHOT_LIMITS, statusPaths } from "../src/lane.ts";
+import { bound, laneGc, laneReview, laneRun, listLanes, setupCommand, SNAPSHOT_LIMITS, statusPaths } from "../src/lane.ts";
 import { loadProfile, type Profile } from "../src/profile.ts";
 import { releaseSlot, reserveSlot } from "../src/slots.ts";
 
@@ -12,6 +12,7 @@ let repo: string;
 let bin: string;
 const savedPath = process.env.PATH;
 const savedHome = process.env.HOME;
+const savedState = process.env.ORCH_STATE;
 // Hermetic: these tests may run inside a lane VERIFY, where ORCH_LANE=1 is
 // inherited and would trip the depth guard of every laneRun below.
 const savedLane = process.env.ORCH_LANE;
@@ -62,7 +63,228 @@ afterAll(() => {
   process.env.PATH = savedPath;
   if (savedLane !== undefined) process.env.ORCH_LANE = savedLane;
   process.env.HOME = savedHome;
+  if (savedState === undefined) delete process.env.ORCH_STATE;
+  else process.env.ORCH_STATE = savedState;
   rmSync(root, { recursive: true, force: true });
+});
+
+// A real local git worktree plus a fake Orca control plane. The observer runs
+// in a poisoned PTY-like environment; no real Orca or model is ever called.
+function fakeOrca(mode = "up") {
+  writeFileSync(join(root, "orca-mode"), mode);
+  const script = `#!${process.execPath}
+import { spawn, spawnSync } from 'node:child_process';
+import { appendFileSync, existsSync, readFileSync, writeFileSync, openSync } from 'node:fs';
+const root = ${JSON.stringify(root)};
+const args = process.argv.slice(2), verb = args.slice(0, 2).join(' ');
+const flag = k => args[args.indexOf(k) + 1];
+const mode = readFileSync(root + '/orca-mode', 'utf8');
+appendFileSync(root + '/orca-calls', JSON.stringify(args) + '\\n');
+const fail = code => { console.log(JSON.stringify({ok:false,error:{code}})); process.exit(1); };
+const ok = result => { console.log(JSON.stringify({ok:true,result})); process.exit(0); };
+if (mode === 'down') fail('relay_socket_missing');
+if (mode === 'invalid') { console.log('not JSON'); process.exit(0); }
+const db = root + '/orca-resources';
+const resources = existsSync(db) ? JSON.parse(readFileSync(db, 'utf8')) : {};
+const persist = () => writeFileSync(db, JSON.stringify(resources));
+if (verb === 'worktree current') ok({worktree:{id:'fake::' + process.cwd(),repoId:'fake',path:process.cwd(),hostId:mode === 'remote' ? 'ssh:remote' : 'local'}});
+if (verb === 'worktree create') {
+  const name = flag('--name'), path = root + '/orca-' + name;
+  const r = spawnSync('git', ['worktree','add','-q','-b','fake/' + name,path,flag('--base-branch')]);
+  if (r.status !== 0) fail('create_failed');
+  const w = {id:'fake::' + path,path,branch:'refs/heads/fake/' + name};
+  resources['id:' + w.id] = {worktree:w};
+  resources['name:' + name] = resources['id:' + w.id]; persist();
+  if (mode === 'lost-create' || mode === 'unknown-create') fail('runtime_unavailable');
+  ok({worktree:w});
+}
+const entry = resources[flag('--worktree')];
+if (mode === 'unknown-create') fail('runtime_unavailable');
+if (!entry) fail('selector_not_found');
+if (verb === 'worktree show') ok({worktree:entry.worktree});
+if (verb === 'terminal create') {
+  if (mode === 'no-terminal') fail('terminal_unavailable');
+  const out = openSync(root + '/observer-output', 'a');
+  const child = spawn('/bin/sh', ['-c', flag('--command')], {cwd:entry.worktree.path,
+    detached:true, stdio:['ignore',out,out], env:{...process.env,ORCA_SECRET:'pty-secret',SECRET_TOKEN:'pty-secret'}});
+  child.unref(); entry.pid = child.pid; persist();
+  ok({terminal:{handle:'term_fake'}});
+}
+if (verb === 'terminal close') {
+  if (mode === 'close-fails') fail('stop_unverifiable');
+  if (entry.pid) { try { process.kill(-entry.pid, 'SIGKILL'); } catch {} delete entry.pid; persist(); }
+  ok({closed:1});
+}
+if (verb === 'worktree rm') {
+  if (mode === 'rm-fails') fail('runtime_unavailable');
+  if (mode === 'rm-pending') ok({removed:true,removing:true});
+  const r = spawnSync('git', ['worktree','remove','--force',entry.worktree.path]);
+  if (r.status !== 0) fail('remove_failed');
+  for (const k of Object.keys(resources)) if (resources[k].worktree.id === entry.worktree.id) delete resources[k];
+  persist(); ok({removed:true});
+}
+fail('unsupported');
+`;
+  writeFileSync(join(bin, "orca"), script);
+  chmodSync(join(bin, "orca"), 0o755);
+}
+
+describe("Orca lane channel", () => {
+  test("auto: visible observer, dirty snapshot, isolated worker, usage and gc", async () => {
+    fakeOrca();
+    process.env.SECRET_TOKEN = "caller-secret";
+    writeFileSync(join(repo, "caller-dirty.txt"), "snapshot input\n");
+    fake("codex", "sleep 1; env > env.txt; echo hi > out.txt; echo 'tokens used'; echo 321");
+    let state: Awaited<ReturnType<typeof laneRun>>["state"];
+    try {
+      const pending = laneRun({ to: "codex", specPath: spec("test -f out.txt && test -f caller-dirty.txt"), repo, profile });
+      await Bun.sleep(200);
+      const running = listLanes().find(s => s.status === "running" && s.orca);
+      expect(running).toBeDefined();
+      expect(laneGc(running!.id)).toContain(`kept ${running!.id} (running)`);
+      const result = await pending;
+      state = result.state;
+      expect(state?.status).toBe("complete");
+      expect(state?.channel).toBe("orca");
+      expect(state?.orca?.terminal).toBe("term_fake");
+      expect(result.report).toContain("USAGE: total 321");
+      expect(Buffer.byteLength(result.report)).toBeLessThanOrEqual(4096);
+      expect(result.report).toContain("snapshot of dirty tree");
+      const dumped = readFileSync(join(state!.worktree, "env.txt"), "utf8");
+      expect(dumped).toContain("ORCH_LANE=1");
+      expect(dumped).not.toContain("caller-secret");
+      expect(dumped).not.toContain("pty-secret");
+      await Bun.sleep(350);
+      const output = readFileSync(join(root, "observer-output"), "utf8");
+      expect(output).toContain('"state":"working"');
+      expect(output).toContain('"state":"done"');
+      expect(output).toContain("LANE REPORT");
+      expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+      expect(existsSync(state!.worktree)).toBe(false);
+      const calls: string[][] = readFileSync(join(root, "orca-calls"), "utf8").trim().split("\n").map(l => JSON.parse(l));
+      const create = calls.find(a => a[0] === "worktree" && a[1] === "create")!;
+      expect(create).toContain("--parent-worktree");
+      expect(create[create.indexOf("--base-branch") + 1]).toBe(state!.base);
+      expect(create[create.indexOf("--setup") + 1]).toBe("skip");
+      const command = calls.find(a => a[0] === "terminal" && a[1] === "create")!;
+      expect(command[command.indexOf("--command") + 1]).toContain("'-i'");
+      expect(calls.some(a => a[0] === "terminal" && a[1] === "close" && a.includes("--all"))).toBe(true);
+      expect(calls.some(a => a[0] === "worktree" && a[1] === "rm")).toBe(true);
+    } finally {
+      delete process.env.SECRET_TOKEN;
+      rmSync(join(repo, "caller-dirty.txt"), { force: true });
+      if (state) laneGc(state.id);
+      rmSync(join(bin, "orca"), { force: true });
+    }
+  });
+
+  test("explicit headless never contacts an available Orca", async () => {
+    fakeOrca();
+    const before = readFileSync(join(root, "orca-calls"), "utf8");
+    fake("codex", "true");
+    try {
+      const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile, channel: "headless" });
+      expect(state?.channel).toBe("headless");
+      expect(state?.orca).toBeUndefined();
+      expect(readFileSync(join(root, "orca-calls"), "utf8")).toBe(before);
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
+
+  test.each(["absent", "down", "invalid", "remote", "remote-route"])("explicit orca falls back when %s", async (mode) => {
+    if (mode !== "absent") fakeOrca(mode);
+    const routed = process.env.ORCA_ENVIRONMENT;
+    if (mode === "remote-route") process.env.ORCA_ENVIRONMENT = "another-host";
+    fake("codex", "true");
+    try {
+      const { state, report } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile, channel: "orca" });
+      expect(state?.status).toBe("noop");
+      expect(state?.channel).toBe("headless");
+      expect(state?.orca).toBeUndefined();
+      expect(report).toContain("headless");
+    } finally {
+      if (routed === undefined) delete process.env.ORCA_ENVIRONMENT;
+      else process.env.ORCA_ENVIRONMENT = routed;
+      rmSync(join(bin, "orca"), { force: true });
+    }
+  });
+
+  test.each(["lost-create", "no-terminal"])("%s runs the worker once and retains Orca gc ownership", async (mode) => {
+    fakeOrca(mode);
+    fake("codex", "echo once >> out.txt");
+    try {
+      const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile, channel: "orca" });
+      expect(state?.status).toBe("complete");
+      expect(state?.channel).toBe(mode === "no-terminal" ? "headless" : "orca");
+      expect(state?.orca).toBeDefined();
+      expect(readFileSync(join(state!.worktree, "out.txt"), "utf8")).toBe("once\n");
+      expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
+
+  test.each(["close-fails", "rm-fails", "rm-pending"])("gc retains ledger and branch when %s", async (mode) => {
+    fakeOrca();
+    fake("codex", "true");
+    try {
+      const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile });
+      fakeOrca(mode);
+      expect(laneGc(state!.id).some(s => s.startsWith(`kept ${state!.id} (Orca`))).toBe(true);
+      expect(existsSync(state!.worktree)).toBe(true);
+      expect(listLanes().some(s => s.id === state!.id)).toBe(true);
+      expect(sh(repo, `git rev-parse --verify ${state!.branch}`).status).toBe(0);
+      fakeOrca();
+      expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
+
+  test("unknown create outcome stays recoverable without launching a worker", async () => {
+    fakeOrca("unknown-create");
+    const marker = join(root, "unexpected-worker");
+    fake("codex", `touch ${marker}`);
+    try {
+      const { report } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile });
+      expect(report).toContain("STATUS: unavailable");
+      expect(existsSync(marker)).toBe(false);
+      const pending = listLanes().find(s => s.orca?.selector.startsWith("name:"))!;
+      expect(pending).toBeDefined();
+      fakeOrca();
+      expect(laneGc(pending.id)).toContain(`removed ${pending.id}`);
+      expect(sh(repo, `git branch --list 'fake/lane-${pending.id}'`).stdout.trim()).toBe("");
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
+
+  test("gc completes a prior asynchronous Orca removal", async () => {
+    fakeOrca();
+    fake("codex", "true");
+    try {
+      const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile });
+      fakeOrca("rm-pending");
+      expect(laneGc(state!.id).some(s => s.includes("removal pending"))).toBe(true);
+      // The fake server completes its previously accepted removal later.
+      spawnSync("git", ["worktree", "remove", "--force", state!.worktree], { cwd: repo });
+      const db = join(root, "orca-resources");
+      const resources = JSON.parse(readFileSync(db, "utf8"));
+      for (const k of Object.keys(resources)) if (resources[k].worktree.path === state!.worktree) delete resources[k];
+      writeFileSync(db, JSON.stringify(resources));
+      fakeOrca();
+      expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+      expect(sh(repo, `git rev-parse --verify ${state!.branch}`).status).not.toBe(0);
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
+
+  test("Orca channel keeps process-group timeout and skips VERIFY", async () => {
+    fakeOrca();
+    const marker = join(root, "orca-late-write");
+    fake("codex", `(sleep 2; touch ${marker}) & sleep 30`);
+    try {
+      const { state, report } = await laneRun({ to: "codex", specPath: spec("echo should-not-run"), repo,
+        profile: { ...profile, limits: { ...profile.limits, timeout_seconds: 0.1 } } });
+      expect(state?.status).toBe("timeout");
+      expect(report).toContain("VERIFY: not run");
+      await Bun.sleep(2200);
+      expect(existsSync(marker)).toBe(false);
+      expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
 });
 
 describe("lane run classes", () => {

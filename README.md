@@ -31,9 +31,11 @@ dépendance externe. Plan :
 | Commande | Effet |
 |---|---|
 | `lead claude\|codex\|grok` | Ouvre une session lead (harness lancé directement) |
-| `lane run --to codex --spec f` | Délègue une tâche ; affiche un rapport borné |
+| `lane run --to codex --spec f` | Délègue une tâche ; worktree enfant et état visible dans Orca local si disponible ; rapport borné |
+| `lane run --to codex --spec f --channel headless` | Force le canal sans Orca |
+| `lane run --to codex --spec f --channel orca` | Demande le canal Orca ; repli headless si Orca ou son relais est indisponible |
 | `lane review --base <ref> --goal "..."` | Revue croisée lecture seule (sur risque) |
-| `lane status`, `lane gc` | Liste les lanes ; retire celles intégrées ou vides |
+| `lane status`, `lane gc` | Liste aussi les lanes en cours ; ferme les terminaux et retire les worktrees intégrés ou vides via leur propriétaire |
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
 | `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |
 | `orch mem add\|search\|recent\|show` | Mémoire du lead : notes Markdown, rappel à la demande |
@@ -41,6 +43,15 @@ dépendance externe. Plan :
 | `make check` | Typecheck, tests, matrice d'équivalence niveaux 0 à 2 |
 | `make smoke` | Lanes réelles vers codex, grok et claude : tâche complète + sondes de confinement (écriture `$HOME`, réseau, lane imbriquée) + décisions de la règle du lead Codex. Payant (~450k tokens, surtout en cache) : à lancer après tout changement de la façon dont les workers démarrent |
 | `scripts/orca-run-teardown.sh --run <id> --into <ref>` | Ferme un Run Orca intégré : worktrees, terminaux, branches fusionnées |
+
+Le terminal Orca observe la lane et affiche `working`, puis `done` et son
+rapport ; ce n'est pas une session interactive du worker. Le worker conserve
+son environnement filtré, ses sandboxes et son timeout headless. Aucun Run
+d'orchestration ni message `worker_done` n'est nécessaire. Une création dont
+la réponse est perdue est recherchée par son nom unique ; si son résultat
+reste inconnu, la lane s'arrête et conserve son état pour `lane gc --drop <id>`.
+GC conserve aussi cet état si Orca ne confirme pas le nettoyage, ou si sa
+suppression asynchrone est encore en cours : relancer `lane gc` après sa fin.
 
 ## Fichiers installés (`orch install`)
 

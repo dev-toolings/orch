@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// lane: hand one bounded task to another harness, headless, in its own git
-// worktree, and print a short report. No model call happens in this process.
+// lane: hand one bounded task to another harness in its own git worktree,
+// optionally observed in Orca. No model call happens in this process.
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -195,9 +195,106 @@ function tail(text: string, lines: number): string {
   return text.trimEnd().split("\n").slice(-lines).join("\n");
 }
 
-function orcaUp(): boolean {
-  const r = spawnSync("orca", ["terminal", "list", "--json"], { encoding: "utf8", timeout: 5000 });
-  return r.status === 0 && !/relay socket/i.test(`${r.stdout}${r.stderr}`);
+function orcaCall(repo: string, args: string[], timeout = 5000): any {
+  if (["ORCA_ENVIRONMENT", "ORCA_PAIRING_CODE", "ORCA_REMOTE_PAIRING"].some(k => process.env[k]?.trim())) {
+    throw new Error("Orca remote routing is unsupported for local lanes");
+  }
+  const r = spawnSync("orca", [...args, "--json"], { cwd: repo, encoding: "utf8", timeout, killSignal: "SIGKILL" });
+  let response: any;
+  try { response = JSON.parse(r.stdout ?? ""); } catch {}
+  if (r.status !== 0 || response?.ok !== true) {
+    throw Object.assign(new Error(`Orca ${args.slice(0, 2).join(" ")}: ${response?.error?.code ?? r.error?.message ?? "unavailable"}`), { code: response?.error?.code });
+  }
+  return response.result;
+}
+
+function orcaParent(repo: string): { id: string; repoId: string } | null {
+  try {
+    const w = orcaCall(repo, ["worktree", "current"]).worktree;
+    // The observer reads local lane files. Never route it to another host,
+    // nor silently parent it to the terminal's unrelated current workspace.
+    return w?.hostId === "local" && w.path === repo && typeof w.id === "string" && typeof w.repoId === "string" ? w : null;
+  } catch { return null; }
+}
+
+function saveLane(dir: string, state: LaneState): void {
+  const tmp = join(dir, "state.tmp");
+  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  renameSync(tmp, join(dir, "state.json"));
+}
+
+function alive(pid?: number): boolean {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// This PTY is a status observer, never the worker. Orca 1.4.229's OSC 9999
+// ingress supplies sidebar agent rows even for headless Claude, which Orca's
+// process detector deliberately excludes. Keep the worker under runLogged:
+// no Orca environment, launch flags, hooks or PTY lifetime can weaken it.
+async function observeInOrca(dir: string, state: LaneState): Promise<string | undefined> {
+  const script = join(dir, "observe.mjs");
+  writeFileSync(script, `import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+const dir = ${JSON.stringify(dir)};
+const clean = s => String(s).replace(/[\\x00-\\x1f\\x7f]/g, ' ').slice(0, 500);
+let previous = '', last = 0;
+while (existsSync(dir + '/state.json')) {
+  const s = JSON.parse(readFileSync(dir + '/state.json', 'utf8'));
+  let running = s.status === 'running';
+  if (running) { try { process.kill(s.pid, 0); } catch { running = false; } }
+  const label = running ? 'running' : s.status === 'running' ? 'interrupted' : s.status;
+  if (label !== previous || Date.now() - last > 10000) {
+    const payload = { state: running ? 'working' : 'done', agentType: s.to,
+      prompt: 'lane ' + s.id, lastAssistantMessage: running ? undefined : clean(s.reason || label) };
+    process.stdout.write('\\x1b]0;lane ' + label + ' - ' + s.to + '\\x07');
+    process.stdout.write('\\x1b]9999;' + JSON.stringify(payload) + '\\x07');
+    if (label !== previous) console.log('LANE ' + s.id + ': ' + label);
+    previous = label; last = Date.now();
+  }
+  writeFileSync(dir + '/observer.ready', 'ready');
+  if (!running) {
+    if (existsSync(dir + '/report.txt')) console.log(readFileSync(dir + '/report.txt', 'utf8').replace(/[\\x00-\\x08\\x0b-\\x1f\\x7f]/g, ''));
+    break;
+  }
+  await new Promise(r => setTimeout(r, 250));
+}
+`);
+  const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+  // The PTY's login shell may inherit Orca's environment. Clear it before
+  // starting even the observer; the actual worker uses workerEnv separately.
+  const command = ["/usr/bin/env", "-i", ...Object.entries(workerEnv()).map(([k, v]) => `${k}=${v}`), process.execPath, script].map(quote).join(" ");
+  const t = orcaCall(state.repo, ["terminal", "create", "--worktree", state.orca!.selector, "--command", command], 30_000).terminal;
+  if (typeof t?.handle !== "string") throw new Error("Orca observer returned no terminal handle");
+  state.orca!.terminal = t.handle;
+  saveLane(dir, state);
+  const until = Date.now() + 5000;
+  while (!existsSync(join(dir, "observer.ready")) && Date.now() < until) await Bun.sleep(50);
+  if (!existsSync(join(dir, "observer.ready"))) throw new Error("Orca observer did not acknowledge startup");
+  return t.handle;
+}
+
+function removeOrca(state: LaneState): void {
+  const selector = state.orca!.selector;
+  try {
+    const w = orcaCall(state.repo, ["worktree", "show", "--worktree", selector]).worktree;
+    // Recover a creation whose reply was lost before we recorded its path
+    // or renamed its branch. Persist before removal can become asynchronous.
+    if (selector.startsWith("name:")) {
+      if (typeof w?.path !== "string" || typeof w?.branch !== "string") throw new Error("Orca cleanup identity unavailable");
+      state.worktree = w.path;
+      state.branch = w.branch.replace(/^refs\/heads\//, "");
+      saveLane(join(stateDir(), "lanes", state.id), state);
+    }
+  }
+  catch (e) {
+    if (["worktree_not_found", "selector_not_found"].includes((e as { code?: string }).code ?? "") && !existsSync(state.worktree)) return;
+    throw e;
+  }
+  orcaCall(state.repo, ["terminal", "close", "--worktree", selector, "--all"], 30_000);
+  orcaCall(state.repo, ["worktree", "rm", "--worktree", selector, "--force"], 30_000);
+  // Orca can acknowledge asynchronous removal. Retain the ledger until the
+  // checkout is actually gone, so a later gc can finish branch cleanup.
+  if (existsSync(state.worktree)) throw new Error("Orca worktree removal pending; run lane gc again");
 }
 
 export interface LaneState {
@@ -207,12 +304,15 @@ export interface LaneState {
   base: string;
   branch: string;
   worktree: string;
-  status: Status;
+  status: Status | "running";
   changed: boolean;
   reason?: string;
   usage: Usage;
   started: string;
   ended: string;
+  channel?: "headless" | "orca";
+  pid?: number;
+  orca?: { selector: string; terminal?: string };
 }
 
 function fmtUsage(u: Usage): string {
@@ -244,6 +344,9 @@ export async function laneRun(opts: {
   const p = opts.profile;
   const depth = depthRefusal("LANE REPORT", p.limits.max_depth);
   if (depth) return { report: depth };
+  if (opts.channel !== undefined && !["headless", "orca"].includes(opts.channel)) {
+    return { report: "LANE REPORT\nSTATUS: refused-by-lane\nREASON: channel must be headless or orca\n" };
+  }
   const spec = parseSpec(readFileSync(opts.specPath, "utf8"));
   if (opts.to === "grok" && !grokProfileInstalled()) {
     return { report: "LANE REPORT\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n" };
@@ -265,16 +368,57 @@ export async function laneRun(opts: {
   const dir = join(sd, "lanes", id);
   mkdirSync(dir, { recursive: true });
   chmodSync(dir, 0o700);
-  const wt = join(dir, "wt");
+  let wt = join(dir, "wt");
   const branch = `lane/${id}`;
   const started = new Date().toISOString();
+  let live: LaneState | undefined;
+  let channel = "headless";
+  let channelReason = "";
   try {
     const b = workerBase(repo, dir);
     if (!b.ok) return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${b.reason}\n` };
     const base = b.sha;
-    if (!git(repo, "worktree", "add", "-q", "-b", branch, wt, base).ok) {
+    live = { id, to: opts.to, repo, base, branch, worktree: wt, status: "running", changed: true,
+      usage: {}, started, ended: "", pid: process.pid, channel: "headless" };
+    const parent = opts.channel === "headless" ? null : orcaParent(repo);
+    if (parent) {
+      // Persist ownership before the mutation: a lost create response must
+      // leave a selector gc can recover, never an untracked Orca resource.
+      live.orca = { selector: `name:lane-${id}` };
+      saveLane(dir, live);
+      let created: any;
+      try {
+        created = orcaCall(repo, ["worktree", "create", "--repo", `id:${parent.repoId}`,
+          "--name", `lane-${id}`, "--parent-worktree", `id:${parent.id}`, "--base-branch", base, "--setup", "skip"], 30_000).worktree;
+      } catch (e) {
+        // A response can be lost after creation. Adopt only this unique lane,
+        // never repeat the mutation or launch a second worker.
+        try { created = orcaCall(repo, ["worktree", "show", "--worktree", live.orca.selector]).worktree; }
+        catch { throw e; }
+      }
+      if (!created?.path || !created?.id || !existsSync(created.path)) throw new Error("Orca returned no local worktree");
+      wt = created.path;
+      live.worktree = wt;
+      live.orca.selector = `id:${created.id}`;
+      // Track the actual branch even if the rename fails, for safe gc.
+      live.branch = git(wt, "branch", "--show-current").out;
+      saveLane(dir, live);
+      if (!git(wt, "branch", "-m", branch).ok) throw new Error("could not name the Orca lane branch");
+      live.branch = branch;
+      saveLane(dir, live);
+      try {
+        // --setup skip also suppresses default-tab commands. All terminals
+        // in this just-created workspace are ours and can be closed safely.
+        orcaCall(repo, ["terminal", "close", "--worktree", live.orca.selector, "--all"], 30_000);
+        await observeInOrca(dir, live);
+        channel = live.channel = "orca";
+      } catch (e) {
+        channelReason = `${(e as Error).message}; worker remains headless`;
+      }
+    } else if (!git(repo, "worktree", "add", "-q", "-b", branch, wt, base).ok) {
       return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: git worktree add failed\n` };
     }
+    saveLane(dir, live);
     let setupLine = "SETUP: none";
     const setup = setupCommand(spec, repo);
     if (setup) {
@@ -300,14 +444,16 @@ export async function laneRun(opts: {
         why = `setup could not run: ${(e as Error).message}`;
       }
       if (why) {
-        git(repo, "worktree", "remove", "--force", wt);
+        if (live.orca) removeOrca(live);
+        else git(repo, "worktree", "remove", "--force", wt);
         git(repo, "branch", "-D", branch);
         // A state record keeps the diagnostics discoverable, and lane gc removes them.
         const failed: LaneState = {
           id, to: opts.to, repo, base, branch, worktree: wt, status: "unavailable", changed: false, usage: {}, started, ended: new Date().toISOString(),
+          channel: live.channel,
         };
-        writeFileSync(join(dir, "state.json"), JSON.stringify(failed, null, 2));
-        return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${why}\nSETUP: ${setup.display} (${setup.source})\nLOG: ${setupLog}\n` };
+        saveLane(dir, failed);
+        return { report: bound(`LANE REPORT\nSTATUS: unavailable\nREASON: ${why}\nSETUP: ${setup.display} (${setup.source})\nLOG: ${setupLog}\n`, p.limits.report_max_bytes) };
       }
       setupLine = `SETUP: ${setup.display} (${setup.source}, ok in ${Math.round((performance.now() - t0) / 1000)}s)`;
     }
@@ -319,10 +465,6 @@ export async function laneRun(opts: {
     const call = workerArgv(opts.to, choice, {
       cwd: wt, promptPath, effort: opts.effort ?? spec.reasoning, readOnly: false, lastMessagePath: lastPath, bin: grokBin,
     });
-    const channel = opts.channel === "orca" || (opts.channel !== "headless" && orcaUp())
-      ? "headless (orca relay up; card launch not implemented yet)"
-      : "headless";
-
     const run = await runLogged(call.argv, {
       cwd: wt, logPath, stdinPath: call.stdin ? promptPath : undefined,
       timeoutMs: p.limits.timeout_seconds * 1000, env: workerEnv(),
@@ -372,13 +514,13 @@ export async function laneRun(opts: {
 
     const state: LaneState = {
       id, to: opts.to, repo, base, branch, worktree: wt, status, changed, usage, started, ended: new Date().toISOString(),
-      reason,
+      reason, channel: live.channel, orca: live.orca,
     };
-    writeFileSync(join(dir, "state.json"), JSON.stringify(state, null, 2));
 
     const report = [
       "LANE REPORT",
       `LANE: ${opts.to} · ${model} · effort ${effort} · ${channel}`,
+      channelReason ? `CHANNEL: ${channelReason}` : "",
       `STATUS: ${status}`,
       reason ? `REASON: ${reason}` : "",
       `ID: ${id}`,
@@ -396,7 +538,14 @@ export async function laneRun(opts: {
         : "",
       `LOG: ${logPath}`,
     ].filter(Boolean).join("\n") + "\n";
-    return { report: bound(report, p.limits.report_max_bytes), state };
+    const bounded = bound(report, p.limits.report_max_bytes);
+    writeFileSync(join(dir, "report.txt"), bounded);
+    saveLane(dir, state);
+    return { report: bounded, state };
+  } catch (e) {
+    const reason = (e as Error).message;
+    if (live) saveLane(dir, { ...live, status: "unavailable", reason, ended: new Date().toISOString() });
+    return { report: bound(`LANE REPORT\nSTATUS: unavailable\nREASON: ${reason}\nID: ${id}\nLOG: ${dir}\n`, p.limits.report_max_bytes) };
   } finally {
     releaseSlot(sd, slot);
   }
@@ -473,6 +622,10 @@ export function laneGc(drop?: string): string[] {
     }
   }
   for (const s of listLanes()) {
+    if (s.status === "running" && alive(s.pid)) {
+      out.push(`kept ${s.id} (running)`);
+      continue;
+    }
     // Config-independent status (untracked files and submodules always
     // shown). A worktree that cannot be inspected is kept too: only an
     // explicit --drop forces the removal of unknown or uncommitted work.
@@ -489,8 +642,20 @@ export function laneGc(drop?: string): string[] {
       out.push(`kept ${s.id} (${s.status}, not integrated)`);
       continue;
     }
-    git(s.repo, "worktree", "remove", "--force", s.worktree);
-    git(s.repo, "branch", "-D", s.branch);
+    if (s.orca) {
+      try { removeOrca(s); }
+      catch (e) {
+        out.push(`kept ${s.id} (${(e as Error).message})`);
+        continue;
+      }
+    } else if (existsSync(s.worktree) && !git(s.repo, "worktree", "remove", "--force", s.worktree).ok) {
+      out.push(`kept ${s.id} (git worktree remove failed)`);
+      continue;
+    }
+    if (git(s.repo, "show-ref", "--verify", "--quiet", `refs/heads/${s.branch}`).ok && !git(s.repo, "branch", "-D", s.branch).ok) {
+      out.push(`kept ${s.id} (branch removal failed)`);
+      continue;
+    }
     rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
     out.push(`removed ${s.id}`);
   }
