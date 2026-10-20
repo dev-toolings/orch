@@ -51,6 +51,8 @@ export function plan(home: string, targets: Target[], manifest: Manifest | null)
     if (!cur) return { path: t.path, op: "create" };
     if (cur.kind === t.kind && cur.sha256 === want) return { path: t.path, op: "unchanged" };
     const mine = owned.get(t.path);
+    // An empty file holds nothing to lose (a harness creates some on first run).
+    if (!mine && cur.kind === "file" && cur.sha256 === sha("")) return { path: t.path, op: "update" };
     if (!mine) return { path: t.path, op: "conflict", reason: "exists and was not installed by orch" };
     if (mine.sha256 !== cur.sha256) return { path: t.path, op: "conflict", reason: "edited since install" };
     return { path: t.path, op: "update" };

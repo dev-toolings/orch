@@ -48,6 +48,12 @@ export function render(profile: Profile): Target[] {
       kind: "file",
       content: body("codex-orch.rules") + "\n",
     },
+    {
+      // The profile lane runs Grok write workers under: no child network (see the file).
+      path: ".grok/sandbox.toml",
+      kind: "file",
+      content: body("grok-sandbox.toml") + "\n",
+    },
     { path: ".local/bin/lane", kind: "symlink", content: join(ROOT, "src", "lane.ts") },
     { path: ".local/bin/lead", kind: "symlink", content: join(ROOT, "src", "lead.ts") },
     { path: ".local/bin/orch", kind: "symlink", content: join(ROOT, "src", "orch.ts") },

@@ -39,6 +39,7 @@ dépendance externe. Plan :
 | `orch mem add\|search\|recent\|show` | Mémoire du lead : notes Markdown, rappel à la demande |
 | `orch docs update\|status\|search` | Corpus local de docs officielles, indexé par `ctx`, consulté à la demande |
 | `make check` | Typecheck, tests, matrice d'équivalence niveaux 0 à 2 |
+| `make smoke` | Lanes réelles vers codex, grok et claude : tâche complète + sondes de confinement (écriture `$HOME`, réseau, lane imbriquée) + décisions de la règle du lead Codex. Payant (~450k tokens, surtout en cache) : à lancer après tout changement de la façon dont les workers démarrent |
 | `scripts/orca-run-teardown.sh --run <id> --into <ref>` | Ferme un Run Orca intégré : worktrees, terminaux, branches fusionnées |
 
 ## Fichiers installés (`orch install`)

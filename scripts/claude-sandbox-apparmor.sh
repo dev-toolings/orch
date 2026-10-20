@@ -15,9 +15,12 @@
 # Usage: scripts/claude-sandbox-apparmor.sh --install | --uninstall | --status
 set -euo pipefail
 
-PROFILE=/etc/apparmor.d/bwrap
-UBUNTU=/etc/apparmor.d/bwrap-userns-restrict
-DISABLED=/etc/apparmor.d/disable/bwrap-userns-restrict
+# Overridable for tests (tests/apparmor.test.ts); the defaults are the system's.
+APPARMOR_DIR="${APPARMOR_DIR:-/etc/apparmor.d}"
+APPARMOR_PROFILES="${APPARMOR_PROFILES:-/sys/kernel/security/apparmor/profiles}"
+PROFILE="$APPARMOR_DIR/bwrap"
+UBUNTU="$APPARMOR_DIR/bwrap-userns-restrict"
+DISABLED="$APPARMOR_DIR/disable/bwrap-userns-restrict"
 MARK="# Installed by orch scripts/claude-sandbox-apparmor.sh"
 
 profile_body() {
@@ -66,7 +69,7 @@ ours() {
   first_line "${1:-}" | grep -qxF "$MARK"
 }
 
-loaded() { sudo grep -q "^$1 " /sys/kernel/security/apparmor/profiles; }
+loaded() { sudo grep -q "^$1 " "$APPARMOR_PROFILES"; }
 
 # Put back the Ubuntu profile and drop ours, after a failed install.
 rollback() {

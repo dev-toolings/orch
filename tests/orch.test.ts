@@ -125,6 +125,25 @@ describe("external workers", () => {
     expect(missingSystemPackages(() => true)).toEqual([]);
   });
 
+  test("Grok write workers run under the orch-lane profile, which blocks child network", () => {
+    const { argv } = workerArgv("grok", {}, opts);
+    expect(argv[argv.indexOf("--sandbox") + 1]).toBe("orch-lane");
+    expect(workerArgv("grok", {}, { ...opts, readOnly: true }).argv).toContain("read-only");
+    const profile = render(loadProfile("max20")).find((t) => t.path === ".grok/sandbox.toml");
+    expect(profile?.content).toMatch(/\[profiles\.orch-lane\]\nextends = "workspace"\nrestrict_network = true/);
+  });
+
+  test("install adopts an empty pre-existing file, never a non-empty one", () => {
+    const home = mkdtempSync(join(tmpdir(), "adopt-"));
+    mkdirSync(join(home, ".grok"), { recursive: true });
+    writeFileSync(join(home, ".grok", "sandbox.toml"), "");
+    const t = render(loadProfile("max20")).filter((x) => x.path === ".grok/sandbox.toml");
+    expect(plan(home, t, null)[0].op).toBe("update");
+    writeFileSync(join(home, ".grok", "sandbox.toml"), "[profiles.mine]\n");
+    expect(plan(home, t, null)[0].op).toBe("conflict");
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test("doctor names each missing piece", () => {
     const home = mkdtempSync(join(tmpdir(), "doctor-"));
     const none = doctorChecks(home, (b) => b !== "socat", () => true);
@@ -133,6 +152,9 @@ describe("external workers", () => {
     if (process.platform === "linux") expect(none.lines.join("\n")).toContain("missing socat");
     mkdirSync(join(home, ".codex", "rules"), { recursive: true });
     writeFileSync(join(home, ".codex", "rules", "orch.rules"), "x");
+    expect(doctorChecks(home, () => true, () => true).lines.join("\n")).toContain("orch-lane");
+    mkdirSync(join(home, ".grok"), { recursive: true });
+    writeFileSync(join(home, ".grok", "sandbox.toml"), "[profiles.orch-lane]\n");
     expect(doctorChecks(home, () => true, () => true)).toEqual({ ok: true, lines: expect.any(Array) });
     if (process.platform === "linux") {
       const blocked = doctorChecks(home, () => true, () => false);

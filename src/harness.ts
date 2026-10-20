@@ -36,6 +36,8 @@ export interface WorkerCall {
 // loaded (`--setting-sources ""`): the operator's or the repository's settings
 // (excludedCommands, allowWrite, additionalDirectories, allow rules, hooks)
 // would otherwise widen what the worker may do; only the flags below apply.
+export const GROK_WRITE_PROFILE = "orch-lane";
+
 export const CLAUDE_SANDBOX = {
   sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false },
 };
@@ -68,7 +70,8 @@ export function workerArgv(
     const argv = [
       "grok", "--cwd", opts.cwd, "--prompt-file", opts.promptPath,
       "--output-format", "json", "--no-subagents", "--always-approve",
-      "--sandbox", opts.readOnly ? "read-only" : "workspace",
+      // orch-lane: workspace without child network, installed by orch (catalog/grok-sandbox.toml)
+      "--sandbox", opts.readOnly ? "read-only" : GROK_WRITE_PROFILE,
     ];
     return { argv, promptPath: opts.promptPath, stdin: false };
   }

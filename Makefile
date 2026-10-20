@@ -32,6 +32,13 @@ parity: ## Powlisher parity matrix, free levels 0-2
 
 check: typecheck test parity ## Typecheck, tests and parity matrix
 
+doctor: ## Can each worker harness run a lane here (no model call)
+	@bun src/orch.ts doctor
+
+smoke: ## Real lanes x3 workers: job + confinement probes (BILLABLE, model calls)
+	@printf "$(C_WARN)[make] smoke calls codex, grok and claude for real$(C_RESET)\n"
+	@bun src/smoke.ts && printf "$(C_OK)[make] smoke ok$(C_RESET)\n" || { printf "$(C_ERR)[make] smoke failed$(C_RESET)\n"; exit 1; }
+
 # ─── Lanes ───────────────────────────────────────────────────────────────────
 
 lanes: ## List lane runs and their status
@@ -47,4 +54,4 @@ help: ## List targets by section
 		/^# ─── / { s = $$0; gsub(/^# ─── | ─+$$/, "", s); printf "\n$(C_SECTION)%s$(C_RESET)\n", s } \
 		/^[a-zA-Z_-]+:.*## / { printf "  $(C_TARGET)%-14s$(C_RESET) %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-.PHONY: deps plan-install drift test typecheck parity check lanes lanes-gc help
+.PHONY: deps plan-install drift test typecheck parity check doctor smoke lanes lanes-gc help

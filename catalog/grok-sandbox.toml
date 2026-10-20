@@ -1,0 +1,12 @@
+# Installed by orch (`orch install`), removed by `orch uninstall`.
+#
+# The sandbox profile lane gives Grok write workers (`grok --sandbox orch-lane`).
+# Built-in `workspace` (read everywhere; write the worktree, ~/.grok and temp
+# dirs) lets child processes reach the network, unlike the Codex and Claude
+# workers; this profile blocks it (seccomp, Linux). The deny list keeps keys
+# out of reach and makes Grok refuse to start if the policy cannot be applied,
+# instead of running unconfined. See ~/.grok/docs/user-guide/18-sandbox.md.
+[profiles.orch-lane]
+extends = "workspace"
+restrict_network = true
+deny = ["~/.ssh", "~/.gnupg"]
