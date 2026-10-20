@@ -111,11 +111,13 @@ install() {
     if loaded bwrap && [ "$had_ours" = no ]; then
       sudo apparmor_parser -R "$UBUNTU" || rollback "could not unload $UBUNTU"
     fi
-    [ -L "$DISABLED" ] || sudo ln -s "$UBUNTU" "$DISABLED"
+    [ -L "$DISABLED" ] || sudo ln -s "$UBUNTU" "$DISABLED" || rollback "could not disable $UBUNTU"
     echo "disabled $UBUNTU"
   fi
-  profile_body | sudo tee "$PROFILE" > /dev/null
-  sudo chmod 644 "$PROFILE"
+  # Every step after the Ubuntu profile is unloaded rolls back on failure
+  # (the `||` also keeps set -e from exiting before the rollback runs).
+  { profile_body | sudo tee "$PROFILE" > /dev/null; } || rollback "could not write $PROFILE"
+  sudo chmod 644 "$PROFILE" || rollback "could not chmod $PROFILE"
   sudo apparmor_parser -r "$PROFILE" || rollback "could not load $PROFILE"
   echo "loaded $PROFILE"
   probe || rollback "the sandbox probe still fails with the replacement profile"

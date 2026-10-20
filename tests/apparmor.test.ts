@@ -2,9 +2,9 @@
 // APPARMOR_DIR, a fake loaded-profiles list, and stubs for sudo (runs the
 // command unprivileged and logs it), sysctl, apparmor_parser and bwrap,
 // driven by STUB_* variables. No root, no real policy is touched.
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -48,13 +48,23 @@ case "$1" in
       mv "$APPARMOR_PROFILES.n" "$APPARMOR_PROFILES" ;;
   -R) grep -v 'bwrap ' "$APPARMOR_PROFILES" > "$APPARMOR_PROFILES.n" || true; mv "$APPARMOR_PROFILES.n" "$APPARMOR_PROFILES" ;;
 esac`);
-  // The nested probe passes only once the replacement profile is loaded, unless STUB_NESTED forces it.
+  // Each probe is logged by its inner command. The nested one is recognised by
+  // its exact argv and passes only once the replacement profile is loaded,
+  // unless STUB_NESTED forces it.
   stub(bin, "bwrap", `
 case "$*" in
-  *unshare*) [ -n "\${STUB_NESTED:-}" ] && exit "$STUB_NESTED"; grep -q '^bwrap (unconfined)' "$APPARMOR_PROFILES" ;;
-  *) exit 0 ;;
+  *"--unshare-user unshare --user --map-root-user true") echo "probe nested" >> "$STUB_LOG"
+     [ -n "\${STUB_NESTED:-}" ] && exit "$STUB_NESTED"; grep -q '^bwrap (unconfined)' "$APPARMOR_PROFILES" ;;
+  *"--unshare-user true") echo "probe basic" >> "$STUB_LOG"; exit 0 ;;
+  *) echo "probe unknown: $*" >> "$STUB_LOG"; exit 1 ;;
 esac`);
   process.env.STUB_PATH = `${bin}:/usr/bin:/bin`;
+});
+
+afterEach(() => {
+  chmodSync(join(root, "apparmor.d"), 0o755);
+  rmSync(root, { recursive: true, force: true });
+  delete process.env.STUB_PATH;
 });
 
 function run(arg: string, env: Record<string, string> = {}) {
@@ -77,6 +87,22 @@ describe("claude-sandbox-apparmor.sh", () => {
     expect(isLink(disabled())).toBe(true);
     expect(readFileSync(loadedList, "utf8")).toBe("bwrap (unconfined)\n");
     expect(r.stdout).toContain("ok   a user namespace can nest inside bwrap");
+    // both distinct probes ran, the nested one with its exact inner command
+    const probes = readFileSync(log, "utf8").split("\n").filter((l) => l.startsWith("probe"));
+    expect(probes).toContain("probe basic");
+    expect(probes).toContain("probe nested");
+    expect(probes.some((l) => l.startsWith("probe unknown"))).toBe(false);
+  });
+
+  test("a failing write after the Ubuntu profile is unloaded rolls back", () => {
+    // a read-only target dir makes the tee of the new profile fail
+    chmodSync(dir, 0o555);
+    const r = run("--install");
+    chmodSync(dir, 0o755);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/could not (write|disable)/);
+    expect(isLink(disabled())).toBe(false);
+    expect(readFileSync(loadedList, "utf8")).toContain("unpriv_bwrap (enforce)");
   });
 
   test("a replacement that does not parse changes nothing", () => {

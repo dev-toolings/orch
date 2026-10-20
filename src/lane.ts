@@ -2,12 +2,12 @@
 // lane: hand one bounded task to another harness, headless, in its own git
 // worktree, and print a short report. No model call happens in this process.
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { classify, parseWorkerOutput, PREAMBLE, REVIEW_PREAMBLE, type Status, type Usage, workerArgv } from "./harness.ts";
-import { HARNESSES, type Harness, loadProfile, type Profile } from "./profile.ts";
+import { HARNESSES, type Harness, loadProfile, type Profile, ROOT } from "./profile.ts";
 import { runLogged, workerEnv } from "./proc.ts";
 import { releaseSlot, reserveSlot } from "./slots.ts";
 import { missingFields, parseSpec, type Spec } from "./spec.ts";
@@ -28,9 +28,21 @@ export const SNAPSHOT_LIMITS = { files: 20_000, bytes: 512 * 1024 * 1024, timeou
 // rewrite the caller's .git/index.
 function statusEntries(cwd: string): string[] | null {
   const r = spawnSync("git", ["--no-optional-locks", "-C", cwd, "status", "--porcelain=v1", "-z",
-    "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8" });
+    "--untracked-files=all", "--ignore-submodules=none"], { encoding: "utf8", timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
   if (r.status !== 0) return null;
   return (r.stdout ?? "").split("\0").filter(Boolean);
+}
+
+// Paths named by `status --porcelain=v1 -z` entries: "XY path", and a rename
+// or copy is followed by its origin as a bare entry, which is skipped.
+export function statusPaths(entries: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const xy = entries[i].slice(0, 2);
+    out.push(entries[i].slice(3));
+    if (xy.includes("R") || xy.includes("C")) i++;
+  }
+  return out;
 }
 
 type Base = { ok: true; sha: string; snapshotOf?: string } | { ok: false; reason: string };
@@ -49,21 +61,24 @@ export function workerBase(repo: string, dir: string): Base {
   if (entries === null) return { ok: false, reason: "git status failed in the caller's repository" };
   if (!entries.length) return { ok: true, sha: head.out };
 
-  const gitlinks = new Set(git(repo, "ls-files", "-s").out.split("\n")
-    .filter((l) => l.startsWith("160000 ")).map((l) => l.split("\t")[1]));
-  const dirtySub = entries.map((e) => e.slice(3)).filter((path) => gitlinks.has(path));
+  const paths = statusPaths(entries);
+  // -z: raw paths, comparable with status paths whatever their characters.
+  const staged = spawnSync("git", ["-C", repo, "ls-files", "-s", "-z"], { encoding: "utf8", timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
+  if (staged.status !== 0) return { ok: false, reason: "git ls-files failed in the caller's repository" };
+  const gitlinks = new Set((staged.stdout ?? "").split("\0").filter((l) => l.startsWith("160000 ")).map((l) => l.slice(l.indexOf("\t") + 1)));
+  const dirtySub = paths.filter((path) => gitlinks.has(path));
   if (dirtySub.length) return { ok: false, reason: `dirty submodule ${dirtySub.join(", ")}: commit inside it first` };
 
-  const others = spawnSync("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], { encoding: "utf8" });
-  const untracked = (others.stdout ?? "").split("\0").filter(Boolean);
+  // Budget over everything the snapshot would copy: tracked edits and untracked files.
   let bytes = 0;
-  for (const f of untracked) {
+  for (const f of paths) {
     try {
-      bytes += statSync(join(repo, f)).size;
+      const st = statSync(join(repo, f));
+      if (st.isFile()) bytes += st.size;
     } catch {}
   }
-  if (untracked.length > SNAPSHOT_LIMITS.files || bytes > SNAPSHOT_LIMITS.bytes) {
-    return { ok: false, reason: `untracked files too large to snapshot (${untracked.length} files, ${Math.round(bytes / 1048576)} MB): gitignore them or commit` };
+  if (paths.length > SNAPSHOT_LIMITS.files || bytes > SNAPSHOT_LIMITS.bytes) {
+    return { ok: false, reason: `changes too large to snapshot (${paths.length} files, ${Math.round(bytes / 1048576)} MB): gitignore them or commit` };
   }
 
   const index = join(dir, "snapshot.index");
@@ -77,6 +92,26 @@ export function workerBase(repo: string, dir: string): Base {
   try {
     if (existsSync(callerIndex)) copyFileSync(callerIndex, index);
     else if (g("read-tree", "HEAD") === null) return { ok: false, reason: "could not seed the snapshot index" };
+    // The copied index keeps assume-unchanged and skip-worktree bits, which make
+    // `add -A` skip a present file's edits. Clear them in the copy only; a
+    // skip-worktree entry absent from disk (sparse checkout) stays as is.
+    const tagged = spawnSync("git", ["-C", repo, "ls-files", "-v", "-z"], { encoding: "utf8", env, timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL" });
+    const assumed: string[] = [];
+    const skipped: string[] = [];
+    for (const e of (tagged.stdout ?? "").split("\0").filter(Boolean)) {
+      const tag = e[0];
+      const path = e.slice(2);
+      if (tag === "S") {
+        if (existsSync(join(repo, path))) skipped.push(path);
+      } else if (tag !== tag.toUpperCase()) assumed.push(path);
+    }
+    const clear = (flag: string, list: string[]) =>
+      !list.length || spawnSync("git", ["-C", repo, "update-index", flag, "-z", "--stdin"], {
+        input: list.join("\0") + "\0", env, timeout: SNAPSHOT_LIMITS.timeoutMs, killSignal: "SIGKILL",
+      }).status === 0;
+    if (!clear("--no-assume-unchanged", assumed) || !clear("--no-skip-worktree", skipped)) {
+      return { ok: false, reason: "could not clear assume-unchanged or skip-worktree bits in the snapshot index" };
+    }
     const tree = g("add", "-A") !== null ? g("write-tree") : null;
     const sha = tree && g("-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit-tree", tree, "-p", head.out,
       "-m", `lane: snapshot of working tree over ${short}`);
@@ -103,6 +138,40 @@ export function setupCommand(spec: Spec, repo: string): { argv: string[]; displa
     return { argv: ["bun", "install", "--frozen-lockfile"], display: "bun install --frozen-lockfile", source: "auto, bun.lock" };
   }
   return null;
+}
+
+// Grok workers run under orch's profiles (`--sandbox orch-lane|orch-review`).
+// Grok resolves a name the user file lacks from the project's
+// .grok/sandbox.toml, which the worktree's repository controls; when both
+// define it, the user's wins. So the exact profiles orch installs must be in
+// the user file: else fail closed.
+export function grokProfileInstalled(home = process.env.HOME ?? homedir()): boolean {
+  const user = join(home, ".grok", "sandbox.toml");
+  if (!existsSync(user)) return false;
+  const want = readFileSync(join(ROOT, "catalog", "grok-sandbox.toml"), "utf8");
+  return readFileSync(user, "utf8").includes(want.slice(want.indexOf("[profiles.orch-lane]")).trimEnd());
+}
+
+// The profiles deny ~/.grok/bin and ~/.grok/downloads, where grok lives and
+// which a worker could otherwise overwrite; Grok re-executes itself inside
+// its sandbox, so the worker runs from a pinned copy per version under the
+// lane state dir, read-only, outside every path a worker may write.
+export function pinnedGrok(): string | null {
+  const which = spawnSync("sh", ["-c", "command -v grok"], { encoding: "utf8" });
+  if (which.status !== 0) return null;
+  const real = realpathSync(which.stdout.trim());
+  const dir = join(stateDir(), "bin");
+  // Keyed by name, size and mtime: a binary replaced under the same name gets a new copy.
+  const st = statSync(real);
+  const pinned = join(dir, `${basename(real)}-${st.size}-${Math.trunc(st.mtimeMs)}`);
+  if (!existsSync(pinned)) {
+    mkdirSync(dir, { recursive: true });
+    const tmp = `${pinned}.tmp-${process.pid}`;
+    copyFileSync(real, tmp);
+    chmodSync(tmp, 0o555);
+    renameSync(tmp, pinned);
+  }
+  return pinned;
 }
 
 function tail(text: string, lines: number): string {
@@ -156,6 +225,11 @@ export async function laneRun(opts: {
     return { report: `LANE REPORT\nSTATUS: refused-by-lane\nREASON: max_depth ${p.limits.max_depth}: a lane worker cannot start a lane\n` };
   }
   const spec = parseSpec(readFileSync(opts.specPath, "utf8"));
+  if (opts.to === "grok" && !grokProfileInstalled()) {
+    return { report: "LANE REPORT\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n" };
+  }
+  const grokBin = opts.to === "grok" ? pinnedGrok() : undefined;
+  if (grokBin === null) return { report: "LANE REPORT\nSTATUS: unavailable\nREASON: grok not found on PATH\n" };
   const missing = missingFields(spec);
   if (missing.length) return { report: `LANE REPORT\nSTATUS: refused-by-lane\nREASON: spec missing ${missing.join(", ")}\n` };
 
@@ -223,7 +297,7 @@ export async function laneRun(opts: {
     const logPath = join(dir, "worker.log");
     const choice = p.lanes[opts.to];
     const call = workerArgv(opts.to, choice, {
-      cwd: wt, promptPath, effort: opts.effort ?? spec.reasoning, readOnly: false, lastMessagePath: lastPath,
+      cwd: wt, promptPath, effort: opts.effort ?? spec.reasoning, readOnly: false, lastMessagePath: lastPath, bin: grokBin,
     });
     const channel = opts.channel === "orca" || (opts.channel !== "headless" && orcaUp())
       ? "headless (orca relay up; card launch not implemented yet)"
@@ -238,7 +312,8 @@ export async function laneRun(opts: {
 
     // Same forced view as the snapshot: the repo's status config is shared by
     // the worktree and must not hide what the worker created.
-    const dirty = (statusEntries(wt) ?? []).join("\n");
+    const after = statusEntries(wt);
+    const dirty = (after ?? []).join("\n");
     const commits = git(wt, "rev-list", `${base}..HEAD`).out;
     const changed = Boolean(dirty || commits);
 
@@ -253,7 +328,8 @@ export async function laneRun(opts: {
       verifyOut = `exit ${v.code}${v.timedOut ? " (timeout)" : ""}\n${tail(readFileSync(verifyLog, "utf8"), 12)}`;
     }
 
-    const status = classify({ ...run, changed, verifyOk, log });
+    // Without a reliable status the change cannot be measured: never report it as noop.
+    const status = after === null ? "failed" : classify({ ...run, changed, verifyOk, log });
     if (changed && dirty) {
       git(wt, "add", "-A");
       git(wt, "-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit", "-q", "-m",
@@ -273,6 +349,7 @@ export async function laneRun(opts: {
       "LANE REPORT",
       `LANE: ${opts.to} · ${model} · effort ${effort} · ${channel}`,
       `STATUS: ${status}`,
+      after === null ? "REASON: git status failed in the worktree after the worker" : "",
       `ID: ${id}`,
       `BASE: ${base} (${b.snapshotOf ? `snapshot of dirty tree over HEAD ${b.snapshotOf}` : "HEAD"})`,
       `BRANCH: ${branch}`,
@@ -297,6 +374,9 @@ export async function laneRun(opts: {
 export async function laneReview(opts: { from: Harness; to?: Harness; base: string; goal: string; repo: string; profile: Profile }) {
   const rc = opts.profile.review[opts.from];
   const to = opts.to ?? rc.to;
+  if (to === "grok" && !grokProfileInstalled()) return "LANE REVIEW\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n";
+  const grokBin = to === "grok" ? pinnedGrok() : undefined;
+  if (grokBin === null) return "LANE REVIEW\nSTATUS: unavailable\nREASON: grok not found on PATH\n";
   const dir = join(stateDir(), "reviews", `${Date.now()}-${to}`);
   mkdirSync(dir, { recursive: true });
   chmodSync(dir, 0o700);
@@ -309,7 +389,7 @@ Answer under 300 words: first line "VERDICT: ship | fix-first | rethink", then n
 `);
   const lastPath = join(dir, "last.txt");
   const logPath = join(dir, "worker.log");
-  const call = workerArgv(to, rc, { cwd: opts.repo, promptPath, readOnly: true, lastMessagePath: lastPath });
+  const call = workerArgv(to, rc, { cwd: opts.repo, promptPath, readOnly: true, lastMessagePath: lastPath, bin: grokBin });
   const run = await runLogged(call.argv, {
     cwd: opts.repo, logPath, stdinPath: call.stdin ? promptPath : undefined,
     timeoutMs: opts.profile.limits.timeout_seconds * 1000, env: workerEnv(),
@@ -333,6 +413,17 @@ export function listLanes(): LaneState[] {
 // is merged into the repo HEAD, or the lane produced no change.
 export function laneGc(drop?: string): string[] {
   const out: string[] = [];
+  // Pinned grok copies of older versions (about 300 MB each): keep the current one only.
+  const binDir = join(stateDir(), "bin");
+  if (existsSync(binDir)) {
+    const current = spawnSync("sh", ["-c", "command -v grok"]).status === 0 ? basename(pinnedGrok() ?? "") : "";
+    for (const f of readdirSync(binDir)) {
+      if (f !== current) {
+        rmSync(join(binDir, f), { force: true });
+        out.push(`removed pinned ${f}`);
+      }
+    }
+  }
   for (const s of listLanes()) {
     const merged = git(s.repo, "merge-base", "--is-ancestor", s.branch, "HEAD").ok;
     const squashed = s.changed && git(s.repo, "diff", "--quiet", "HEAD", s.branch, "--").ok;

@@ -37,6 +37,7 @@ export interface WorkerCall {
 // (excludedCommands, allowWrite, additionalDirectories, allow rules, hooks)
 // would otherwise widen what the worker may do; only the flags below apply.
 export const GROK_WRITE_PROFILE = "orch-lane";
+export const GROK_REVIEW_PROFILE = "orch-review";
 
 export const CLAUDE_SANDBOX = {
   sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false },
@@ -50,7 +51,8 @@ const CLAUDE_WRITE_WORKER = [
 export function workerArgv(
   to: Harness,
   choice: ModelChoice,
-  opts: { cwd: string; promptPath: string; effort?: string; readOnly: boolean; lastMessagePath: string },
+  // bin: the executable to run instead of the harness name (lane pins Grok's).
+  opts: { cwd: string; promptPath: string; effort?: string; readOnly: boolean; lastMessagePath: string; bin?: string },
 ): WorkerCall {
   const effort = opts.effort ?? choice.effort;
   if (to === "codex") {
@@ -68,10 +70,10 @@ export function workerArgv(
   if (to === "grok") {
     // never pass a model: Grok workers inherit the session model
     const argv = [
-      "grok", "--cwd", opts.cwd, "--prompt-file", opts.promptPath,
-      "--output-format", "json", "--no-subagents", "--always-approve",
-      // orch-lane: workspace without child network, installed by orch (catalog/grok-sandbox.toml)
-      "--sandbox", opts.readOnly ? "read-only" : GROK_WRITE_PROFILE,
+      opts.bin ?? "grok", "--cwd", opts.cwd, "--prompt-file", opts.promptPath,
+      "--output-format", "json", "--no-subagents", "--always-approve", "--no-auto-update",
+      // orch's profiles: no child network, ~/.grok agents/skills/binaries denied (catalog/grok-sandbox.toml)
+      "--sandbox", opts.readOnly ? GROK_REVIEW_PROFILE : GROK_WRITE_PROFILE,
     ];
     return { argv, promptPath: opts.promptPath, stdin: false };
   }

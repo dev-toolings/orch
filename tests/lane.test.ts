@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bound, laneGc, laneRun, setupCommand, SNAPSHOT_LIMITS } from "../src/lane.ts";
+import { bound, laneGc, laneRun, setupCommand, SNAPSHOT_LIMITS, statusPaths } from "../src/lane.ts";
 import { loadProfile, type Profile } from "../src/profile.ts";
 import { releaseSlot, reserveSlot } from "../src/slots.ts";
 
@@ -11,6 +11,7 @@ let root: string;
 let repo: string;
 let bin: string;
 const savedPath = process.env.PATH;
+const savedHome = process.env.HOME;
 const profile: Profile = { ...loadProfile("max20"), limits: { max_concurrent: 5, max_depth: 1, report_max_bytes: 4096, timeout_seconds: 30 } };
 
 const SPEC = (verify: string) => `OBJECTIVE: create out.txt
@@ -47,10 +48,15 @@ beforeAll(() => {
   sh(repo, "git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init");
   process.env.ORCH_STATE = join(root, "state");
   process.env.PATH = `${bin}:/usr/bin:/bin`;
+  // Hermetic HOME: Grok lanes need orch's profile, never the operator's files.
+  process.env.HOME = join(root, "home");
+  mkdirSync(join(root, "home", ".grok"), { recursive: true });
+  writeFileSync(join(root, "home", ".grok", "sandbox.toml"), readFileSync(join(import.meta.dir, "..", "catalog", "grok-sandbox.toml"), "utf8"));
 });
 
 afterAll(() => {
   process.env.PATH = savedPath;
+  process.env.HOME = savedHome;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -286,6 +292,44 @@ describe("snapshot and setup hardening (review findings)", () => {
     expect(report).toContain("dirty submodule dep");
   });
 
+  test("an edited assume-unchanged file reaches the snapshot; the caller's bit stays set", async () => {
+    const r = fresh("snap-assume");
+    sh(r, "git update-index --assume-unchanged a.txt");
+    writeFileSync(join(r, "a.txt"), "edited under assume-unchanged\n");
+    writeFileSync(join(r, "other.txt"), "makes the tree dirty\n");
+    fake("codex", "echo hi > out.txt");
+    const { state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
+    expect(state?.status).toBe("complete");
+    expect(readFileSync(join(state!.worktree, "a.txt"), "utf8")).toBe("edited under assume-unchanged\n");
+    expect(sh(r, "git ls-files -v a.txt").stdout.trim()).toBe("h a.txt");
+  });
+
+  test("a dirty submodule with a non-ASCII name is refused too", async () => {
+    const sub = fresh("snap-sub2-src");
+    const r = fresh("snap-super2");
+    sh(r, `git -c protocol.file.allow=always submodule add -q ${sub} dép && git -c user.email=t@t -c user.name=t commit -q -m sub`);
+    writeFileSync(join(r, "dép", "a.txt"), "edited\n");
+    const { report } = await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile });
+    expect(report).toContain("dirty submodule dép");
+  });
+
+  test("tracked edits count toward the snapshot budget", async () => {
+    const r = fresh("snap-budget-tracked");
+    writeFileSync(join(r, "a.txt"), "edited tracked file\n");
+    writeFileSync(join(r, "new.txt"), "untracked\n");
+    const saved = SNAPSHOT_LIMITS.files;
+    SNAPSHOT_LIMITS.files = 1;
+    try {
+      expect((await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile })).report).toContain("(2 files");
+    } finally {
+      SNAPSHOT_LIMITS.files = saved;
+    }
+  });
+
+  test("status paths skip the origin entry of a rename", () => {
+    expect(statusPaths(["R  new.txt", "old.txt", " M a.txt", "?? b c.txt"])).toEqual(["new.txt", "a.txt", "b c.txt"]);
+  });
+
   test("the snapshot budget refuses an oversized untracked tree", async () => {
     const r = fresh("snap-budget");
     writeFileSync(join(r, "x1.bin"), "1");
@@ -294,7 +338,7 @@ describe("snapshot and setup hardening (review findings)", () => {
     SNAPSHOT_LIMITS.files = 1;
     try {
       const { report } = await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile });
-      expect(report).toContain("untracked files too large to snapshot (2 files");
+      expect(report).toContain("changes too large to snapshot (2 files");
     } finally {
       SNAPSHOT_LIMITS.files = saved;
     }
@@ -331,5 +375,38 @@ describe("snapshot and setup hardening (review findings)", () => {
     const applied = sh(target, `git -C ${r} diff --binary --no-ext-diff --no-textconv ${state!.base} ${state!.branch} | git apply`);
     expect(applied.status).toBe(0);
     expect(readFileSync(join(target, "blob.bin")).equals(Buffer.from([0, 1, 2]))).toBe(true);
+  });
+});
+
+describe("grok profile guard", () => {
+  test("a Grok lane fails closed without orch's exact orch-lane profile in the user file", async () => {
+    const savedHome = process.env.HOME;
+    const home = join(root, "grok-home");
+    mkdirSync(join(home, ".grok"), { recursive: true });
+    fake("grok", "echo hi > out.txt");
+    process.env.HOME = home;
+    try {
+      // missing, then defined by someone else under the same name
+      for (const content of [null, '[profiles.orch-lane]\nextends = "devbox"\n']) {
+        if (content !== null) writeFileSync(join(home, ".grok", "sandbox.toml"), content);
+        const { report, state } = await laneRun({ to: "grok", specPath: spec("test -f out.txt"), repo, profile });
+        expect(state).toBeUndefined();
+        expect(report).toContain("missing or modified");
+      }
+      writeFileSync(join(home, ".grok", "sandbox.toml"), readFileSync(join(import.meta.dir, "..", "catalog", "grok-sandbox.toml"), "utf8"));
+      const ok = await laneRun({ to: "grok", specPath: spec("test -f out.txt"), repo, profile });
+      expect(ok.state?.status).toBe("complete");
+      // the worker ran from a read-only pinned copy under the lane state dir, not from PATH
+      const real = statSync(join(root, "bin", "grok"));
+      const pinned = join(process.env.ORCH_STATE!, "bin", `grok-${real.size}-${Math.trunc(real.mtimeMs)}`);
+      expect(existsSync(pinned)).toBe(true);
+      expect(statSync(pinned).mode & 0o777).toBe(0o555);
+      // an older pinned version is pruned by lane gc, the current one kept
+      writeFileSync(join(process.env.ORCH_STATE!, "bin", "grok-old-1-1"), "old");
+      expect(laneGc().join("\n")).toContain("removed pinned grok-old-1-1");
+      expect(existsSync(pinned)).toBe(true);
+    } finally {
+      process.env.HOME = savedHome;
+    }
   });
 });

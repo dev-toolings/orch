@@ -1,7 +1,8 @@
 // orch doctor: can each worker harness run a lane from here? One line per
 // check, so a missing piece is named before a lane fails on it.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { grokProfileInstalled } from "./lane.ts";
 import { join } from "node:path";
 
 export type Which = (bin: string) => boolean;
@@ -39,9 +40,7 @@ export function doctorChecks(home: string, which: Which = onPath, nested: Probe 
   check("codex worker", absent(["codex", "git"]), "install the Codex CLI");
   check("grok worker", absent(["grok", "git"]), "install the Grok CLI");
   // Grok write workers run under orch's `orch-lane` profile (no child network).
-  const grokProfile = join(home, ".grok", "sandbox.toml");
-  const hasProfile = existsSync(grokProfile) && readFileSync(grokProfile, "utf8").includes("[profiles.orch-lane]");
-  check("grok worker sandbox profile orch-lane", hasProfile ? [] : ["~/.grok/sandbox.toml [profiles.orch-lane]"], "orch install");
+  check("grok worker sandbox profile orch-lane", grokProfileInstalled(home) ? [] : ["~/.grok/sandbox.toml [profiles.orch-lane], as orch installs it"], "orch install");
   // The Claude write worker runs Bash in Claude Code's OS sandbox, which needs
   // bubblewrap and socat on Linux; without them it refuses to start.
   const claudeMissing = absent(["claude", "git"]);

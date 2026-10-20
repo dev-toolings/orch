@@ -1,12 +1,25 @@
 # Installed by orch (`orch install`), removed by `orch uninstall`.
 #
-# The sandbox profile lane gives Grok write workers (`grok --sandbox orch-lane`).
-# Built-in `workspace` (read everywhere; write the worktree, ~/.grok and temp
-# dirs) lets child processes reach the network, unlike the Codex and Claude
-# workers; this profile blocks it (seccomp, Linux). The deny list keeps keys
-# out of reach and makes Grok refuse to start if the policy cannot be applied,
-# instead of running unconfined. See ~/.grok/docs/user-guide/18-sandbox.md.
+# The sandbox profiles lane gives Grok workers: orch-lane for a write worker,
+# orch-review for a read-only reviewer. Built-in `workspace` and `read-only`
+# both let a worker write all of ~/.grok (agents, skills, the grok binary),
+# which later sessions load or run, and `workspace` lets child processes reach
+# the network. `read_only` cannot take back a write grant and `strict` cancels
+# every headless prompt (Grok 1.0.62), so these profiles block child network
+# (seccomp, Linux) and deny those directories to the worker (bwrap bind-over:
+# neither read nor written). Grok re-executes itself inside its sandbox, so
+# lane runs it from a pinned copy outside ~/.grok (~/.local/state/orch/bin),
+# which the worker cannot write either. The deny list also makes Grok refuse
+# to start if the policy cannot be applied, instead of running unconfined.
+# lane checks that these exact profiles are the global ones before every Grok
+# worker: a repository's own .grok/sandbox.toml must never define them.
+# See ~/.grok/docs/user-guide/18-sandbox.md.
 [profiles.orch-lane]
 extends = "workspace"
 restrict_network = true
-deny = ["~/.ssh", "~/.gnupg"]
+deny = ["~/.ssh", "~/.gnupg", "~/.grok/agents", "~/.grok/skills", "~/.grok/rules", "~/.grok/installed-plugins", "~/.grok/marketplace-cache", "~/.grok/bin", "~/.grok/downloads", "~/.grok/vendor"]
+
+[profiles.orch-review]
+extends = "read-only"
+restrict_network = true
+deny = ["~/.ssh", "~/.gnupg", "~/.grok/agents", "~/.grok/skills", "~/.grok/rules", "~/.grok/installed-plugins", "~/.grok/marketplace-cache", "~/.grok/bin", "~/.grok/downloads", "~/.grok/vendor"]

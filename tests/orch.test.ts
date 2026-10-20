@@ -128,9 +128,15 @@ describe("external workers", () => {
   test("Grok write workers run under the orch-lane profile, which blocks child network", () => {
     const { argv } = workerArgv("grok", {}, opts);
     expect(argv[argv.indexOf("--sandbox") + 1]).toBe("orch-lane");
-    expect(workerArgv("grok", {}, { ...opts, readOnly: true }).argv).toContain("read-only");
+    const ro = workerArgv("grok", {}, { ...opts, readOnly: true }).argv;
+    expect(ro[ro.indexOf("--sandbox") + 1]).toBe("orch-review");
+    // lane passes a pinned copy of the grok binary
+    expect(workerArgv("grok", {}, { ...opts, bin: "/pinned/grok-1.0" }).argv[0]).toBe("/pinned/grok-1.0");
+    expect(argv).toContain("--no-auto-update");
     const profile = render(loadProfile("max20")).find((t) => t.path === ".grok/sandbox.toml");
     expect(profile?.content).toMatch(/\[profiles\.orch-lane\]\nextends = "workspace"\nrestrict_network = true/);
+    expect(profile?.content).toMatch(/\[profiles\.orch-review\]\nextends = "read-only"\nrestrict_network = true/);
+    for (const p of ["~/.grok/agents", "~/.grok/bin", "~/.grok/downloads"]) expect(profile?.content).toContain(`"${p}"`);
   });
 
   test("install adopts an empty pre-existing file, never a non-empty one", () => {
@@ -154,7 +160,7 @@ describe("external workers", () => {
     writeFileSync(join(home, ".codex", "rules", "orch.rules"), "x");
     expect(doctorChecks(home, () => true, () => true).lines.join("\n")).toContain("orch-lane");
     mkdirSync(join(home, ".grok"), { recursive: true });
-    writeFileSync(join(home, ".grok", "sandbox.toml"), "[profiles.orch-lane]\n");
+    writeFileSync(join(home, ".grok", "sandbox.toml"), render(loadProfile("max20")).find((t) => t.path === ".grok/sandbox.toml")!.content);
     expect(doctorChecks(home, () => true, () => true)).toEqual({ ok: true, lines: expect.any(Array) });
     if (process.platform === "linux") {
       const blocked = doctorChecks(home, () => true, () => false);
