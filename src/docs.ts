@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { git as runGit } from "./git.ts";
 import { ROOT } from "./profile.ts";
 
 export interface Source {
@@ -39,9 +40,9 @@ export function loadSources(path = join(ROOT, "catalog", "docs.yaml")): Source[]
 }
 
 function git(cwd: string, ...args: string[]): string {
-  const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`git ${args[0]}: ${(r.stderr || r.stdout).trim().split("\n").pop()}`);
-  return r.stdout.trim();
+  const r = runGit(cwd, ...args);
+  if (!r.ok) throw new Error(`git ${args[0]}: ${(r.err || r.out).split("\n").pop()}`);
+  return r.out;
 }
 
 function countFiles(dir: string): number {

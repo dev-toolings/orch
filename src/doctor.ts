@@ -2,7 +2,7 @@
 // check, so a missing piece is named before a lane fails on it.
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { grokProfileInstalled } from "./lane.ts";
+import { grokProfileInstalled } from "./grok-runtime.ts";
 import { join } from "node:path";
 
 export type Which = (bin: string) => boolean;

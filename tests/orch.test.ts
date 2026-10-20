@@ -23,6 +23,12 @@ beforeAll(() => {
 afterAll(() => rmSync(join(home, ".."), { recursive: true, force: true }));
 
 describe("render", () => {
+  test("orch and doctor do not import lane", () => {
+    const root = join(import.meta.dir, "..");
+    expect(readFileSync(join(root, "src/orch.ts"), "utf8")).not.toContain('from "./lane.ts"');
+    expect(readFileSync(join(root, "src/doctor.ts"), "utf8")).not.toContain('from "./lane.ts"');
+  });
+
   test("Claude lead pins the profile model, Grok files never do", () => {
     const by = Object.fromEntries(targets.map((t) => [t.path, t.content]));
     expect(by[".claude/agents/lead.md"]).toContain("model: opus");

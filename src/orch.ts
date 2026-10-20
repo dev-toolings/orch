@@ -11,14 +11,14 @@ import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { doctorChecks, missingSystemPackages, onPath } from "./doctor.ts";
 import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs.ts";
-import { bound } from "./lane.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./manifest.ts";
 import { addNote, callerFromEnv, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem.ts";
+import { bound } from "./output.ts";
+import { stateDir } from "./paths.ts";
 import { loadProfile } from "./profile.ts";
 import { render } from "./render.ts";
 
 const home = () => process.env.ORCH_HOME ?? homedir();
-const state = () => process.env.ORCH_STATE ?? join(homedir(), ".local", "state", "orch");
 
 function files(cmd: string, rest: string[]) {
   const { values } = parseArgs({ args: rest, options: { profile: { type: "string" }, "dry-run": { type: "boolean" }, "no-system-deps": { type: "boolean" } } });
@@ -26,7 +26,7 @@ function files(cmd: string, rest: string[]) {
   if (cmd === "install") {
     const profile = loadProfile(values.profile);
     const targets = render(profile);
-    const actions = plan(home(), targets, readManifest(state()));
+    const actions = plan(home(), targets, readManifest(stateDir()));
     for (const a of actions) console.log(`${a.op.padEnd(9)} ~/${a.path}${a.reason ? `  (${a.reason})` : ""}`);
     if (actions.some((a) => a.op === "conflict")) {
       console.error("orch: conflicts, nothing written");
@@ -34,14 +34,14 @@ function files(cmd: string, rest: string[]) {
     }
     if (dry) console.log("dry run: nothing written");
     else {
-      apply(home(), state(), profile.name, targets, actions);
-      console.log(`installed, manifest ${join(state(), "manifest.json")}`);
+      apply(home(), stateDir(), profile.name, targets, actions);
+      console.log(`installed, manifest ${join(stateDir(), "manifest.json")}`);
     }
     if (!values["no-system-deps"]) systemDeps(dry);
   } else if (cmd === "diff") {
-    for (const l of drift(home(), state())) console.log(l);
+    for (const l of drift(home(), stateDir())) console.log(l);
   } else {
-    for (const l of uninstall(home(), state(), dry)) console.log(l);
+    for (const l of uninstall(home(), stateDir(), dry)) console.log(l);
   }
 }
 

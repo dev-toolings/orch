@@ -3,7 +3,10 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bound, laneGc, laneReview, laneRun, listLanes, setupCommand, SNAPSHOT_LIMITS, statusPaths } from "../src/lane.ts";
+import { laneGc, laneReview, laneRun, listLanes, setupCommand } from "../src/lane.ts";
+import { bound } from "../src/output.ts";
+import { laneReport } from "../src/report.ts";
+import { SNAPSHOT_LIMITS, statusPaths } from "../src/worktree.ts";
 import { loadProfile, type Profile } from "../src/profile.ts";
 import { releaseSlot, reserveSlot } from "../src/slots.ts";
 
@@ -374,6 +377,14 @@ describe("lane run classes", () => {
 });
 
 describe("report and slots", () => {
+  test("laneReport renders the fixed report fields", () => {
+    expect(laneReport({
+      to: "codex", model: "m", effort: "low", channel: "headless", channelReason: "", status: "complete",
+      id: "id", base: "base", branch: "lane/id", setupLine: "SETUP: none", stat: "none", verifyOut: "exit 0",
+      message: "done", usage: {}, changed: false, logPath: "/tmp/log",
+    })).toBe("LANE REPORT\nLANE: codex · m · effort low · headless\nSTATUS: complete\nID: id\nBASE: base (HEAD)\nBRANCH: lane/id\nSETUP: none\nCHANGES:\nnone\nVERIFY: exit 0\nWORKER SAID: done\nUSAGE: not reported\nLOG: /tmp/log\n");
+  });
+
   test("report is bounded in bytes", () => {
     const r = bound("x".repeat(10_000), 4096);
     expect(Buffer.byteLength(r)).toBeLessThanOrEqual(4096);

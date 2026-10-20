@@ -1,10 +1,10 @@
 // mem: the lead's memory across sessions and harnesses, as Markdown notes on
 // disk. Recall is on demand (search, recent, show) so the lead prompt stays a
 // stable cached prefix. No model call, no index: notes are read on demand.
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { git } from "./git.ts";
+import { stateDir } from "./paths.ts";
 
 export type Scope = "operator" | "project" | "lead";
 export const SCOPES: Scope[] = ["operator", "project", "lead"];
@@ -46,17 +46,17 @@ export function callerFromEnv(env: NodeJS.ProcessEnv = process.env): Caller {
 // operator and lead notes live under the orch state dir; project notes live
 // in the main worktree so they travel with it across linked worktrees.
 export function scopeDir(scope: Scope, opts: { state?: string; cwd?: string } = {}): string {
-  const state = opts.state ?? process.env.ORCH_STATE ?? join(homedir(), ".local", "state", "orch");
+  const state = opts.state ?? stateDir();
   if (scope === "project") return join(repoRoot(opts.cwd ?? process.cwd()), ".orch", "mem");
   return join(state, "mem", scope);
 }
 
 function repoRoot(cwd: string): string {
-  const common = spawnSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" });
-  const commonDir = common.status === 0 ? common.stdout.trim() : "";
+  const common = git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const commonDir = common.ok ? common.out : "";
   if (commonDir && basename(commonDir) === ".git") return dirname(commonDir);
-  const root = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  return root.status === 0 ? root.stdout.trim() : cwd;
+  const root = git(cwd, "rev-parse", "--show-toplevel");
+  return root.ok ? root.out : cwd;
 }
 
 // Scopes a caller may read: the lead scope is private to lead sessions.
@@ -71,8 +71,8 @@ const PROJECT_IGNORE_WARNING = "note: .orch/mem is gitignored in this repository
 function projectWarning(scope: Scope, id: string, opts: { cwd?: string }): string | undefined {
   if (scope !== "project") return undefined;
   const root = repoRoot(opts.cwd ?? process.cwd());
-  const ignored = spawnSync("git", ["-C", root, "check-ignore", "-q", `.orch/mem/${id}.md`], { encoding: "utf8" });
-  return ignored.status === 0 ? PROJECT_IGNORE_WARNING : undefined;
+  const ignored = git(root, "check-ignore", "-q", `.orch/mem/${id}.md`);
+  return ignored.ok ? PROJECT_IGNORE_WARNING : undefined;
 }
 
 function isActive(note: Note): boolean {
