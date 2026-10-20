@@ -19,6 +19,27 @@ function git(cwd: string, ...args: string[]): { ok: boolean; out: string } {
   return { ok: r.status === 0, out: (r.stdout ?? "").trim() };
 }
 
+// The worker starts from the caller's full working tree. A dirty tree (tracked
+// edits, staged or not, and untracked files not ignored) becomes a snapshot
+// commit over HEAD, built through a private index so the caller's index, HEAD,
+// branches, stash and files stay untouched. A clean tree uses HEAD as is.
+function workerBase(repo: string, dir: string): { sha: string; snapshotOf?: string } | null {
+  const head = git(repo, "rev-parse", "HEAD");
+  if (!head.ok) return null;
+  if (!git(repo, "status", "--porcelain").out) return { sha: head.out };
+  const env = { ...process.env, GIT_INDEX_FILE: join(dir, "snapshot.index") };
+  const g = (...args: string[]) => {
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env });
+    return r.status === 0 ? (r.stdout ?? "").trim() : null;
+  };
+  const short = head.out.slice(0, 12);
+  const tree = g("read-tree", "HEAD") !== null && g("add", "-A") !== null ? g("write-tree") : null;
+  const sha = tree && g("-c", "user.name=lane", "-c", "user.email=lane@localhost", "commit-tree", tree, "-p", head.out,
+    "-m", `lane: snapshot of working tree over ${short}`);
+  rmSync(join(dir, "snapshot.index"), { force: true });
+  return sha ? { sha, snapshotOf: short } : null;
+}
+
 function tail(text: string, lines: number): string {
   return text.trimEnd().split("\n").slice(-lines).join("\n");
 }
@@ -70,7 +91,6 @@ export async function laneRun(opts: {
   const top = git(opts.repo, "rev-parse", "--show-toplevel");
   if (!top.ok) return { report: "LANE REPORT\nSTATUS: unavailable\nREASON: not a git repository\n" };
   const repo = top.out;
-  const base = git(repo, "rev-parse", "HEAD").out;
 
   const id = `${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}-${opts.to}-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;
   const sd = stateDir();
@@ -84,6 +104,9 @@ export async function laneRun(opts: {
   const branch = `lane/${id}`;
   const started = new Date().toISOString();
   try {
+    const b = workerBase(repo, dir);
+    if (!b) return { report: "LANE REPORT\nSTATUS: unavailable\nREASON: could not resolve or snapshot the base\n" };
+    const base = b.sha;
     if (!git(repo, "worktree", "add", "-q", "-b", branch, wt, base).ok) {
       return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: git worktree add failed\n` };
     }
@@ -142,12 +165,17 @@ export async function laneRun(opts: {
       `LANE: ${opts.to} · ${model} · effort ${effort} · ${channel}`,
       `STATUS: ${status}`,
       `ID: ${id}`,
-      `BASE: ${base.slice(0, 12)}  BRANCH: ${branch}`,
+      `BASE: ${base} (${b.snapshotOf ? `snapshot of dirty tree over HEAD ${b.snapshotOf}` : "HEAD"})`,
+      `BRANCH: ${branch}`,
       `CHANGES:\n${stat}`,
       `VERIFY: ${verifyOut}`,
       `WORKER SAID: ${message.replace(/\s+/g, " ").trim().slice(0, 400) || "(nothing)"}`,
       `USAGE: ${fmtUsage(usage)}`,
-      changed && status === "complete" ? `INTEGRATE: git merge --squash ${branch}  then: lane gc` : "",
+      changed && status === "complete"
+        ? b.snapshotOf
+          ? `INTEGRATE: git diff ${base} ${branch} | git apply  then: lane gc --drop ${id}`
+          : `INTEGRATE: git merge --squash ${branch}  then: lane gc`
+        : "",
       `LOG: ${logPath}`,
     ].filter(Boolean).join("\n") + "\n";
     return { report: bound(report, p.limits.report_max_bytes), state };

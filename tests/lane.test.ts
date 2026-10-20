@@ -110,6 +110,27 @@ describe("lane run classes", () => {
     expect(dumped).not.toContain("s3cr3t");
   });
 
+  test("dirty caller tree: worker starts from a snapshot, caller state untouched", async () => {
+    const dirty = join(root, "dirty");
+    mkdirSync(dirty);
+    sh(dirty, "git init -q && echo v1 > shared.txt && git add shared.txt && git -c user.email=t@t -c user.name=t commit -q -m init");
+    writeFileSync(join(dirty, "shared.txt"), "v2\n");
+    writeFileSync(join(dirty, "component.txt"), "new\n");
+    // The lane branch is lane run's own output; everything else of the caller must stay byte-identical.
+    const probe = () => sh(dirty, "git status --porcelain; git rev-parse HEAD; git branch -a | grep -v ' lane/'; git stash list").stdout;
+    const before = probe();
+    fake("codex", "echo hi > out.txt");
+    const { report, state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: dirty, profile });
+    expect(probe()).toBe(before);
+    expect(state?.status).toBe("complete");
+    expect(readFileSync(join(state!.worktree, "shared.txt"), "utf8")).toBe("v2\n");
+    expect(readFileSync(join(state!.worktree, "component.txt"), "utf8")).toBe("new\n");
+    const head = sh(dirty, "git rev-parse --short=12 HEAD").stdout.trim();
+    expect(report).toContain(`BASE: ${state!.base} (snapshot of dirty tree over HEAD ${head})`);
+    expect(sh(dirty, `git diff --name-only ${state!.base} ${state!.branch}`).stdout.trim()).toBe("out.txt");
+    expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+  });
+
   test("incomplete spec is rejected before any worker starts", async () => {
     const p = join(root, "bad.txt");
     writeFileSync(p, "OBJECTIVE: something\n");
