@@ -1,8 +1,8 @@
 # Cheaper profile: lower worker and review effort.
 name: lean
 lead:
-  claude: { model: opus, effort: medium }
-  codex: { model: gpt-6-astra, effort: medium }
+  claude: { model: opus, effort: medium, permission_mode: bypassPermissions }
+  codex: { model: gpt-6-astra, effort: medium, permission_mode: yolo }
   grok: { model: null }
 lanes:
   codex: { model: gpt-5.6-luna, effort: medium }

@@ -1,8 +1,8 @@
 # Default profile. Model ids per harness; null means "inherit, never pass one".
 name: max20
 lead:
-  claude: { model: opus, effort: high }
-  codex: { model: gpt-6-astra, effort: medium }
+  claude: { model: opus, effort: high, permission_mode: bypassPermissions }
+  codex: { model: gpt-6-astra, effort: medium, permission_mode: yolo }
   grok: { model: null }
 lanes:
   codex: { model: gpt-5.6-luna, effort: xhigh }

@@ -28,12 +28,19 @@ export function leadArgv(h: Harness, profileName?: string, extra: string[] = [])
     const out = ["codex", "-c", `developer_instructions=${JSON.stringify(text)}`];
     if (choice.model && !requestedModel(extra)) out.push("--model", choice.model);
     if (choice.effort) out.push("-c", `model_reasoning_effort="${choice.effort}"`);
+    // yolo: no approval prompt and no sandbox, like the Claude lead's
+    // bypassPermissions. Any sandbox or approval flag the operator passes wins.
+    const chosen = extra.some((a) => ["-s", "--sandbox", "-a", "--ask-for-approval", "--full-auto", "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox"].includes(a.split("=")[0]));
+    if (choice.permission_mode === "yolo" && !chosen) out.push("--dangerously-bypass-approvals-and-sandbox");
     return out;
   }
   const out = [h, "--agent", "lead"];
   if (h === "claude") {
     if (choice.model) out.push("--model", choice.model);
     if (choice.effort) out.push("--effort", choice.effort);
+    const asked = extra.some((a) => a.startsWith("--permission-mode") || a === "--dangerously-skip-permissions");
+    if (choice.permission_mode && !asked) out.push("--permission-mode", choice.permission_mode);
   }
   return out;
 }

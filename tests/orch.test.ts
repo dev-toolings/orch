@@ -86,9 +86,22 @@ describe("lead launch argv", () => {
     expect(out).not.toContain("--model");
   });
 
+  test("Codex: the lead starts in yolo mode unless a sandbox or approval flag is given", () => {
+    expect(leadArgv("codex", "max20")).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(leadArgv("codex", "lean")).toContain("--dangerously-bypass-approvals-and-sandbox");
+    for (const flag of [["-s", "workspace-write"], ["--sandbox=read-only"], ["-a", "on-request"], ["--full-auto"], ["--yolo"]]) {
+      expect(leadArgv("codex", "max20", flag)).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    }
+  });
+
   test("Claude and Grok select the installed lead agent", () => {
-    expect(leadArgv("claude", "max20")).toEqual(["claude", "--agent", "lead", "--model", "opus", "--effort", "high"]);
+    expect(leadArgv("claude", "max20")).toEqual(["claude", "--agent", "lead", "--model", "opus", "--effort", "high", "--permission-mode", "bypassPermissions"]);
     expect(leadArgv("grok", "max20")).toEqual(["grok", "--agent", "lead"]);
+  });
+
+  test("Claude: a permission flag in the extra args replaces the profile's", () => {
+    expect(leadArgv("claude", "max20", ["--permission-mode", "plan"])).not.toContain("bypassPermissions");
+    expect(leadArgv("claude", "max20", ["--dangerously-skip-permissions"])).not.toContain("--permission-mode");
   });
 });
 
