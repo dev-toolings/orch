@@ -3,10 +3,12 @@
 // in a manifest so uninstall removes exactly those and nothing else.
 // orch mem: the lead's memory notes (see mem.ts).
 // orch docs: the local documentation corpus (see docs.ts).
+// orch doctor: whether each worker harness can run a lane here (see doctor.ts).
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { doctorChecks } from "./doctor.ts";
 import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs.ts";
 import { bound } from "./lane.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./manifest.ts";
@@ -109,7 +111,12 @@ const [cmd, ...rest] = process.argv.slice(2);
 if (cmd === "mem") mem(rest);
 else if (cmd === "docs") await docs(rest);
 else if (cmd === "install" || cmd === "diff" || cmd === "uninstall") files(cmd, rest);
+else if (cmd === "doctor") {
+  const { ok, lines } = doctorChecks(home());
+  for (const l of lines) console.log(l);
+  if (!ok) process.exitCode = 1;
+}
 else {
-  console.log("usage: orch install [--profile p] [--dry-run] | diff | uninstall [--dry-run] | mem add|search|recent|show | docs update|status|search");
+  console.log("usage: orch install [--profile p] [--dry-run] | diff | uninstall [--dry-run] | mem add|search|recent|show | docs update|status|search | doctor");
   process.exitCode = 2;
 }

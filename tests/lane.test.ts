@@ -188,3 +188,49 @@ test("CLAUDE.md core stays under 4 KB (corpus T01)", () => {
   const f = join(process.env.HOME ?? "", ".claude", "CLAUDE.md");
   if (existsSync(f)) expect(readFileSync(f).length).toBeLessThanOrEqual(4096);
 });
+
+describe("lane setup", () => {
+  const withSetup = (setup: string) => {
+    const p = join(root, `spec-setup-${Math.random().toString(36).slice(2)}.txt`);
+    writeFileSync(p, `${SPEC("test -f out.txt")}SETUP: ${setup}\n`);
+    return p;
+  };
+
+  test("SETUP runs in the worktree before the worker, with LANE_REPO and LANE_WORKTREE", async () => {
+    fake("codex", 'test -f "$PWD/../setup-ran" && echo hi > out.txt');
+    const { report, state } = await laneRun({
+      to: "codex", specPath: withSetup('test "$PWD" = "$LANE_WORKTREE" && test -d "$LANE_REPO/.git" && touch ../setup-ran'), repo, profile,
+    });
+    expect(state?.status).toBe("complete");
+    expect(report).toMatch(/SETUP: .* \(spec SETUP, ok in \d+s\)/);
+  });
+
+  test("a failing SETUP stops the lane before any worker, and removes its branch", async () => {
+    fake("codex", "echo hi > out.txt");
+    const branches = () => sh(repo, "git branch --list 'lane/*'").stdout;
+    const before = branches();
+    const { report, state } = await laneRun({ to: "codex", specPath: withSetup("echo broken toolchain; exit 3"), repo, profile });
+    expect(state).toBeUndefined();
+    expect(report).toContain("STATUS: unavailable");
+    expect(report).toContain("setup failed, exit 3");
+    expect(report).toContain("broken toolchain");
+    expect(branches()).toBe(before);
+  });
+
+  test("a SETUP that leaves files git sees is refused: they would land in the result", async () => {
+    fake("codex", "echo hi > out.txt");
+    const { report } = await laneRun({ to: "codex", specPath: withSetup("echo x > generated.txt"), repo, profile });
+    expect(report).toContain("STATUS: unavailable");
+    expect(report).toContain("setup left files git tracks");
+    expect(report).toContain("generated.txt");
+  });
+
+  test("SETUP: none skips the auto setup", async () => {
+    writeFileSync(join(repo, "bun.lock"), "{}\n");
+    fake("codex", "echo hi > out.txt");
+    const { report, state } = await laneRun({ to: "codex", specPath: withSetup("none"), repo, profile });
+    rmSync(join(repo, "bun.lock"));
+    expect(state?.status).toBe("complete");
+    expect(report).toContain("SETUP: none");
+  });
+});

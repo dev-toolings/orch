@@ -61,7 +61,7 @@ at most 5 concurrent workers including native subagents, depth 1.
   conclusions.
 - Mechanical code above that size: `lane run`. Write the spec to a file first.
 
-Spec file, every part required except REASONING:
+Spec file, every part required except SETUP and REASONING:
 
 ```
 OBJECTIVE: one paragraph
@@ -70,19 +70,33 @@ INTERFACES: signatures, types, API shapes
 CONSTRAINTS: conventions, paths not to touch
 VERIFY: command that proves it works
 ACCEPT: observable criteria checked after VERIFY
+SETUP: command that provisions the worktree, or none   (optional)
 REASONING: low|medium|high|xhigh   (only to override the profile default)
 ```
 
-Run `lane run --to codex|grok|claude --spec <file>`. Read only the report it
-prints. Do not open worker logs or terminals unless the report is `failed`
-and you need one cited excerpt.
+The worker starts from your working tree as it is, uncommitted changes
+included: no commit is needed to delegate. Its worktree has no installed
+dependencies and no gitignored files: lane provisions it before the worker
+starts, from SETUP, else the repository's local `.orch/lane-setup` script,
+else `bun install --frozen-lockfile` when a root bun.lock exists. Name SETUP
+whenever VERIFY needs more (a nested lockfile, a virtualenv, a `.env` copied
+from `$LANE_REPO`).
+
+Run `lane run --to codex|grok|claude --spec <file>` as a plain command: no
+redirection, pipe or `VAR=` prefix (under Codex, only the plain form runs
+outside the sandbox). A run takes minutes: start it in the background when
+your harness allows it, run independent lanes in parallel, and wait for the
+report. Read only the report it prints. Do not open worker logs or terminals
+unless the report is `failed` and you need one cited excerpt.
 
 Report status:
-- `complete`: read the diff stat, spot-check, re-run VERIFY if in doubt.
+- `complete`: read the diff stat, spot-check, re-run VERIFY if in doubt, then
+  apply it with the report's INTEGRATE line and drop the lane (`lane gc --drop <id>`).
 - `noop`: the change already exists; confirm and move on.
 - `refused`, `failed`: one corrected spec at most, then do it yourself or ask.
 - `blocked`: never retry or reword; tell the operator the denial.
-- `timeout`, `unavailable`: say so, then re-route once or do it yourself.
+- `timeout`, `unavailable`: say so, then re-route once or do it yourself. A
+  SETUP failure is yours: fix SETUP, not the worker.
 
 A spec you cannot finish writing means the decision is not made: make it.
 

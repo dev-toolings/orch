@@ -6,6 +6,8 @@ import { leadArgv } from "../src/lead.ts";
 import { apply, drift, plan, readManifest, uninstall } from "../src/manifest.ts";
 import { loadProfile } from "../src/profile.ts";
 import { leadPrompt, render } from "../src/render.ts";
+import { doctorChecks } from "../src/doctor.ts";
+import { CLAUDE_SANDBOX, workerArgv } from "../src/harness.ts";
 
 let home: string;
 let state: string;
@@ -27,7 +29,8 @@ describe("render", () => {
     expect(by[".claude/agents/lead.md"]).toContain("effort: high");
     expect(by[".grok/agents/lead.md"]).not.toMatch(/^model:/m);
     expect(by[".grok/agents/lead-explore.md"]).not.toMatch(/^model:/m);
-    expect(targets.some((t) => t.path.startsWith(".codex/"))).toBe(false);
+    // Codex gets no agent file, only the exec-policy rule for lane and orch.
+    expect(targets.filter((t) => t.path.startsWith(".codex/")).map((t) => t.path)).toEqual([".codex/rules/orch.rules"]);
   });
 });
 
@@ -86,5 +89,41 @@ describe("lead launch argv", () => {
   test("Claude and Grok select the installed lead agent", () => {
     expect(leadArgv("claude", "max20")).toEqual(["claude", "--agent", "lead", "--model", "opus", "--effort", "high"]);
     expect(leadArgv("grok", "max20")).toEqual(["grok", "--agent", "lead"]);
+  });
+});
+
+describe("external workers", () => {
+  const opts = { cwd: "/w", promptPath: "/p", readOnly: false, lastMessagePath: "/l" };
+
+  test("the Claude write worker runs Bash in the OS sandbox, never with a prompt", () => {
+    const { argv } = workerArgv("claude", { model: "sonnet" }, opts);
+    expect(argv).toContain("dontAsk");
+    expect(argv).not.toContain("acceptEdits");
+    expect(JSON.parse(argv[argv.indexOf("--settings") + 1])).toEqual(CLAUDE_SANDBOX);
+    expect(CLAUDE_SANDBOX.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+    expect(argv).toContain("Edit(/**)");
+    expect(argv).not.toContain("Bash");
+  });
+
+  test("the read-only Claude worker stays in plan mode", () => {
+    expect(workerArgv("claude", {}, { ...opts, readOnly: true }).argv).toContain("plan");
+  });
+
+  test("install ships the Codex lead rule for lane and orch", () => {
+    const rule = render(loadProfile("max20")).find((t) => t.path === ".codex/rules/orch.rules");
+    expect(rule?.content).toContain('pattern = ["lane", ["run", "review", "status", "gc"]]');
+    expect(rule?.content).toContain('pattern = ["orch", ["mem", "docs"]]');
+  });
+
+  test("doctor names each missing piece", () => {
+    const home = mkdtempSync(join(tmpdir(), "doctor-"));
+    const none = doctorChecks(home, (b) => b !== "socat");
+    expect(none.ok).toBe(false);
+    expect(none.lines.join("\n")).toContain("orch.rules");
+    if (process.platform === "linux") expect(none.lines.join("\n")).toContain("missing socat");
+    mkdirSync(join(home, ".codex", "rules"), { recursive: true });
+    writeFileSync(join(home, ".codex", "rules", "orch.rules"), "x");
+    expect(doctorChecks(home, () => true)).toEqual({ ok: true, lines: expect.any(Array) });
+    rmSync(home, { recursive: true, force: true });
   });
 });

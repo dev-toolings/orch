@@ -1,0 +1,41 @@
+# Installed by orch (`orch install`), removed by `orch uninstall`.
+#
+# A Codex lead runs in the workspace-write sandbox: .git is read-only, the
+# home directory is read-only and the network is off. `lane` must write a git
+# worktree and its state under ~/.local/state/orch, and the workers it starts
+# need the network; `orch mem` and `orch docs` write their stores under the
+# home directory. These two tools run outside the sandbox without a prompt.
+# Each one isolates what it starts: lane workers run in their own worktree
+# under their own harness sandbox.
+#
+# Codex matches the command's argument list: call them as plain commands
+# (no redirection, no `VAR=` prefix, no `$(...)`), or the rule does not apply.
+
+prefix_rule(
+    pattern = ["lane", ["run", "review", "status", "gc"]],
+    decision = "allow",
+    justification = "orch lane: creates a worker worktree and state outside the workspace, workers need the network",
+    match = [
+        "lane run --to grok --spec /tmp/spec.md",
+        "lane review --base main --goal check",
+        "lane gc --drop 20261020130737-codex-1-abcd",
+    ],
+    not_match = [
+        "lanes run --to grok",
+        "lane rm -rf /",
+    ],
+)
+
+prefix_rule(
+    pattern = ["orch", ["mem", "docs"]],
+    decision = "allow",
+    justification = "orch memory and docs stores live under the home directory",
+    match = [
+        "orch mem search lane",
+        "orch docs search worktree --stack react",
+    ],
+    not_match = [
+        "orch install",
+        "orch uninstall",
+    ],
+)

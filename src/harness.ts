@@ -24,6 +24,24 @@ export interface WorkerCall {
   stdin: boolean;
 }
 
+// A headless Claude worker must run its own checks (tests, typecheck) like a
+// Codex or Grok worker, with no one to approve a prompt. `acceptEdits` approves
+// no shell command, so every Bash call was denied. Bash runs instead inside
+// Claude Code's OS sandbox (bubblewrap + socat on Linux), where it is approved
+// automatically and cannot write outside the worktree; `dontAsk` refuses
+// whatever would still need a prompt rather than hanging. Edit and Write are
+// allowed only under the worktree (`/` is the project root in permission
+// rules). Without the sandbox's dependencies the worker refuses to start
+// (failIfUnavailable) instead of running unconfined.
+export const CLAUDE_SANDBOX = {
+  sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false },
+};
+const CLAUDE_WRITE_WORKER = [
+  "--permission-mode", "dontAsk",
+  "--settings", JSON.stringify(CLAUDE_SANDBOX),
+  "--allowedTools", "Read", "Glob", "Grep", "Edit(/**)", "Write(/**)",
+];
+
 export function workerArgv(
   to: Harness,
   choice: ModelChoice,
@@ -54,7 +72,8 @@ export function workerArgv(
   const argv = ["claude", "-p", "--output-format", "json", "--disallowedTools", "Agent"];
   if (choice.model) argv.push("--model", choice.model);
   if (effort) argv.push("--effort", effort);
-  argv.push("--permission-mode", opts.readOnly ? "plan" : "acceptEdits");
+  if (opts.readOnly) argv.push("--permission-mode", "plan");
+  else argv.push(...CLAUDE_WRITE_WORKER);
   return { argv, promptPath: opts.promptPath, stdin: true };
 }
 

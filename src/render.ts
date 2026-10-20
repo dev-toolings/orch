@@ -18,8 +18,8 @@ function frontmatter(fields: Record<string, string | undefined>): string {
 const LEAD_DESCRIPTION =
   "Lead developer session agent, selected at launch with --agent lead. Never spawn it as a subagent.";
 
-// Files written under HOME. Codex gets nothing: `lead codex` passes the lead
-// prompt as developer_instructions at launch.
+// Files written under HOME. Codex gets no agent file (`lead codex` passes the
+// lead prompt as developer_instructions at launch), only an exec-policy rule.
 export function render(profile: Profile): Target[] {
   const claude = profile.lead.claude;
   return [
@@ -41,6 +41,12 @@ export function render(profile: Profile): Target[] {
         name: "lead-explore",
         description: "Read-only repository explorer for the lead developer. Use to map files and flows before a change; never edits.",
       }) + body("lead-explore.md") + "\n",
+    },
+    {
+      // Lets a Codex lead run lane and orch outside its workspace sandbox (see the file).
+      path: ".codex/rules/orch.rules",
+      kind: "file",
+      content: body("codex-orch.rules") + "\n",
     },
     { path: ".local/bin/lane", kind: "symlink", content: join(ROOT, "src", "lane.ts") },
     { path: ".local/bin/lead", kind: "symlink", content: join(ROOT, "src", "lead.ts") },

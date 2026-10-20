@@ -10,7 +10,7 @@ import { classify, parseWorkerOutput, PREAMBLE, REVIEW_PREAMBLE, type Status, ty
 import { HARNESSES, type Harness, loadProfile, type Profile } from "./profile.ts";
 import { runLogged, workerEnv } from "./proc.ts";
 import { releaseSlot, reserveSlot } from "./slots.ts";
-import { missingFields, parseSpec } from "./spec.ts";
+import { missingFields, parseSpec, type Spec } from "./spec.ts";
 
 export const stateDir = () => process.env.ORCH_STATE ?? join(homedir(), ".local", "state", "orch");
 
@@ -38,6 +38,22 @@ function workerBase(repo: string, dir: string): { sha: string; snapshotOf?: stri
     "-m", `lane: snapshot of working tree over ${short}`);
   rmSync(join(dir, "snapshot.index"), { force: true });
   return sha ? { sha, snapshotOf: short } : null;
+}
+
+// The worktree is a bare checkout: no installed dependencies, no gitignored
+// local files. Without provisioning, a worker cannot run the project's checks
+// and VERIFY fails on the missing toolchain, not on the change. The command
+// runs here, before the worker, outside any worker sandbox and with network.
+// Order: the spec's SETUP (`none` skips), then the repo's local, unversioned
+// `.orch/lane-setup` script, then a root bun.lock (`bun install
+// --frozen-lockfile`). LANE_REPO and LANE_WORKTREE are set for the script.
+export function setupCommand(spec: Spec, repo: string): { cmd: string; source: string } | null {
+  const asked = spec.fields.SETUP?.trim();
+  if (asked) return asked === "none" ? null : { cmd: asked, source: "spec SETUP" };
+  const local = join(repo, ".orch", "lane-setup");
+  if (existsSync(local)) return { cmd: `sh ${JSON.stringify(local)}`, source: "repo .orch/lane-setup" };
+  if (existsSync(join(repo, "bun.lock"))) return { cmd: "bun install --frozen-lockfile", source: "auto, bun.lock" };
+  return null;
 }
 
 function tail(text: string, lines: number): string {
@@ -110,6 +126,27 @@ export async function laneRun(opts: {
     if (!git(repo, "worktree", "add", "-q", "-b", branch, wt, base).ok) {
       return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: git worktree add failed\n` };
     }
+    let setupLine = "SETUP: none";
+    const setup = setupCommand(spec, repo);
+    if (setup) {
+      const t0 = performance.now();
+      const setupLog = join(dir, "setup.log");
+      const s = await runLogged(["sh", "-c", setup.cmd], {
+        cwd: wt, logPath: setupLog, timeoutMs: 900_000, env: workerEnv({ LANE_REPO: repo, LANE_WORKTREE: wt }),
+      });
+      // Setup output must stay out of the result: anything it leaves that git
+      // sees would be committed as the worker's change.
+      const leftover = s.code === 0 && !s.timedOut ? git(wt, "status", "--porcelain").out : "";
+      if (s.code !== 0 || s.timedOut || leftover) {
+        git(repo, "worktree", "remove", "--force", wt);
+        git(repo, "branch", "-D", branch);
+        const why = leftover
+          ? `setup left files git tracks (gitignore them or drop them):\n${tail(leftover, 8)}`
+          : `setup failed, exit ${s.code}${s.timedOut ? " (timeout)" : ""}\n${tail(readFileSync(setupLog, "utf8"), 12)}`;
+        return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${why}\nSETUP: ${setup.cmd} (${setup.source})\nLOG: ${setupLog}\n` };
+      }
+      setupLine = `SETUP: ${setup.cmd} (${setup.source}, ok in ${Math.round((performance.now() - t0) / 1000)}s)`;
+    }
     const promptPath = join(dir, "prompt.txt");
     writeFileSync(promptPath, PREAMBLE + spec.raw);
     const lastPath = join(dir, "last.txt");
@@ -167,6 +204,7 @@ export async function laneRun(opts: {
       `ID: ${id}`,
       `BASE: ${base} (${b.snapshotOf ? `snapshot of dirty tree over HEAD ${b.snapshotOf}` : "HEAD"})`,
       `BRANCH: ${branch}`,
+      setupLine,
       `CHANGES:\n${stat}`,
       `VERIFY: ${verifyOut}`,
       `WORKER SAID: ${message.replace(/\s+/g, " ").trim().slice(0, 400) || "(nothing)"}`,
