@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { doctorChecks } from "./doctor.ts";
+import { spawnSync } from "node:child_process";
+import { doctorChecks, missingSystemPackages, onPath } from "./doctor.ts";
 import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs.ts";
 import { bound } from "./lane.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./manifest.ts";
@@ -20,7 +21,7 @@ const home = () => process.env.ORCH_HOME ?? homedir();
 const state = () => process.env.ORCH_STATE ?? join(homedir(), ".local", "state", "orch");
 
 function files(cmd: string, rest: string[]) {
-  const { values } = parseArgs({ args: rest, options: { profile: { type: "string" }, "dry-run": { type: "boolean" } } });
+  const { values } = parseArgs({ args: rest, options: { profile: { type: "string" }, "dry-run": { type: "boolean" }, "no-system-deps": { type: "boolean" } } });
   const dry = values["dry-run"] ?? false;
   if (cmd === "install") {
     const profile = loadProfile(values.profile);
@@ -36,11 +37,30 @@ function files(cmd: string, rest: string[]) {
       apply(home(), state(), profile.name, targets, actions);
       console.log(`installed, manifest ${join(state(), "manifest.json")}`);
     }
+    if (!values["no-system-deps"]) systemDeps(dry);
   } else if (cmd === "diff") {
     for (const l of drift(home(), state())) console.log(l);
   } else {
     for (const l of uninstall(home(), state(), dry)) console.log(l);
   }
+}
+
+// The sandboxed Claude worker needs bubblewrap and socat (Linux). They are
+// system packages: install them through sudo apt-get when a person is at the
+// terminal to type the password, otherwise print the command. Never fatal:
+// the lead files are installed either way, and `orch doctor` keeps flagging it.
+function systemDeps(dry: boolean) {
+  const pkgs = missingSystemPackages();
+  if (!pkgs.length) return;
+  const cmd = ["sudo", "apt-get", "install", "-y", ...pkgs];
+  const line = cmd.join(" ");
+  if (dry) return console.log(`would run  ${line}  (sandbox for the Claude worker)`);
+  if (!process.stdin.isTTY || !onPath("apt-get")) {
+    return console.log(`system packages missing for the Claude worker sandbox: ${pkgs.join(", ")}\nrun: ${line}`);
+  }
+  console.log(`installing ${pkgs.join(", ")} for the Claude worker sandbox: ${line}`);
+  const r = spawnSync(cmd[0], cmd.slice(1), { stdio: "inherit" });
+  console.log(r.status === 0 ? "system packages installed" : `system packages not installed (exit ${r.status}); run: ${line}`);
 }
 
 function mem(args: string[]) {
@@ -117,6 +137,6 @@ else if (cmd === "doctor") {
   if (!ok) process.exitCode = 1;
 }
 else {
-  console.log("usage: orch install [--profile p] [--dry-run] | diff | uninstall [--dry-run] | mem add|search|recent|show | docs update|status|search | doctor");
+  console.log("usage: orch install [--profile p] [--dry-run] [--no-system-deps] | diff | uninstall [--dry-run] | mem add|search|recent|show | docs update|status|search | doctor");
   process.exitCode = 2;
 }

@@ -6,7 +6,7 @@ import { leadArgv } from "../src/lead.ts";
 import { apply, drift, plan, readManifest, uninstall } from "../src/manifest.ts";
 import { loadProfile } from "../src/profile.ts";
 import { leadPrompt, render } from "../src/render.ts";
-import { doctorChecks } from "../src/doctor.ts";
+import { doctorChecks, missingSystemPackages } from "../src/doctor.ts";
 import { CLAUDE_SANDBOX, workerArgv } from "../src/harness.ts";
 
 let home: string;
@@ -113,6 +113,12 @@ describe("external workers", () => {
     const rule = render(loadProfile("max20")).find((t) => t.path === ".codex/rules/orch.rules");
     expect(rule?.content).toContain('pattern = ["lane", ["run", "review", "status", "gc"]]');
     expect(rule?.content).toContain('pattern = ["orch", ["mem", "docs"]]');
+  });
+
+  test("install maps missing sandbox binaries to their apt packages", () => {
+    const want = process.platform === "linux" ? ["socat"] : [];
+    expect(missingSystemPackages((b) => b !== "socat")).toEqual(want);
+    expect(missingSystemPackages(() => true)).toEqual([]);
   });
 
   test("doctor names each missing piece", () => {

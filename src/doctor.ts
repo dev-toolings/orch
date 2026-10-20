@@ -8,6 +8,15 @@ export type Which = (bin: string) => boolean;
 
 export const onPath: Which = (bin) => spawnSync("sh", ["-c", `command -v ${bin}`], { stdio: "ignore" }).status === 0;
 
+// System packages the sandboxed Claude worker needs on Linux, by binary.
+const CLAUDE_SANDBOX_PACKAGES: Record<string, string> = { bwrap: "bubblewrap", socat: "socat" };
+
+// apt packages to install for the Claude worker's sandbox; empty off Linux.
+export function missingSystemPackages(which: Which = onPath): string[] {
+  if (process.platform !== "linux") return [];
+  return Object.entries(CLAUDE_SANDBOX_PACKAGES).filter(([bin]) => !which(bin)).map(([, pkg]) => pkg);
+}
+
 export function doctorChecks(home: string, which: Which = onPath): { ok: boolean; lines: string[] } {
   const lines: string[] = [];
   let ok = true;

@@ -34,7 +34,8 @@ dépendance externe. Plan :
 | `lane run --to codex --spec f` | Délègue une tâche ; affiche un rapport borné |
 | `lane review --base <ref> --goal "..."` | Revue croisée lecture seule (sur risque) |
 | `lane status`, `lane gc` | Liste les lanes ; retire celles intégrées ou vides |
-| `orch install [--dry-run]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste |
+| `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
+| `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |
 | `orch mem add\|search\|recent\|show` | Mémoire du lead : notes Markdown, rappel à la demande |
 | `orch docs update\|status\|search` | Corpus local de docs officielles, indexé par `ctx`, consulté à la demande |
 | `make check` | Typecheck, tests, matrice d'équivalence niveaux 0 à 2 |
@@ -44,9 +45,17 @@ dépendance externe. Plan :
 
 `~/.claude/agents/lead.md`, `~/.grok/agents/lead.md`,
 `~/.grok/agents/lead-explore.md`, `~/.local/bin/lane`, `~/.local/bin/lead`,
-`~/.local/bin/orch`.
-Codex ne reçoit aucun fichier : `lead codex` passe le prompt lead en
-`developer_instructions` au lancement.
+`~/.local/bin/orch`, `~/.codex/rules/orch.rules`.
+Codex ne reçoit pas de fichier d'agent : `lead codex` passe le prompt lead en
+`developer_instructions` au lancement. La règle `orch.rules` laisse un lead
+Codex lancer `lane` et `orch mem|docs` hors de son sandbox (sinon `.git` et le
+dossier personnel y sont en lecture seule, sans réseau), à condition de les
+appeler en commande simple.
+
+Paquets système (Linux) : `bubblewrap` et `socat`, requis par le sandbox OS
+du worker Claude, qui refuse de démarrer sans. `orch install` les installe via
+`sudo apt-get` en terminal interactif, sinon affiche la commande ;
+`--no-system-deps` saute cette étape.
 
 ## Docs (`orch docs`)
 
