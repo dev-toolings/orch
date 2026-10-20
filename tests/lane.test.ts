@@ -234,3 +234,20 @@ describe("lane setup", () => {
     expect(report).toContain("SETUP: none");
   });
 });
+
+describe("lane depth", () => {
+  test("a worker (ORCH_LANE=1) cannot start a lane: no worktree, no worker", async () => {
+    fake("codex", "echo hi > out.txt");
+    const before = sh(repo, "git branch --list 'lane/*'").stdout;
+    process.env.ORCH_LANE = "1";
+    try {
+      const { report, state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo, profile });
+      expect(state).toBeUndefined();
+      expect(report).toContain("STATUS: refused-by-lane");
+      expect(report).toContain("cannot start a lane");
+    } finally {
+      delete process.env.ORCH_LANE;
+    }
+    expect(sh(repo, "git branch --list 'lane/*'").stdout).toBe(before);
+  });
+});

@@ -100,6 +100,12 @@ export async function laneRun(opts: {
   channel?: string;
 }): Promise<{ report: string; state?: LaneState }> {
   const p = opts.profile;
+  // Depth 1: a worker runs with ORCH_LANE=1 (workerEnv) and may not start a
+  // lane of its own, whatever its harness sandbox would allow. This is what
+  // stops a worker from delegating in a loop.
+  if (process.env.ORCH_LANE === "1") {
+    return { report: `LANE REPORT\nSTATUS: refused-by-lane\nREASON: max_depth ${p.limits.max_depth}: a lane worker cannot start a lane\n` };
+  }
   const spec = parseSpec(readFileSync(opts.specPath, "utf8"));
   const missing = missingFields(spec);
   if (missing.length) return { report: `LANE REPORT\nSTATUS: refused-by-lane\nREASON: spec missing ${missing.join(", ")}\n` };
