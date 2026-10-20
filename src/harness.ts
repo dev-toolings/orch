@@ -1,0 +1,118 @@
+import type { Harness, ModelChoice } from "./profile.ts";
+
+// Scopes the run and opts out of any orchestration rule the worker's global
+// instructions may carry. Wording taken from fable-advisor's luna-implementer:
+// it does not ask the worker to ignore its instructions.
+export const PREAMBLE = `Scope of this run: one implementation task, already planned and delegated by
+an orchestrating session. Implement it directly in this run. I explicitly opt
+out of starting an orchestration or delegation workflow for it. The model and
+reasoning effort for this run are the ones set on the command line.
+Run the VERIFY command and include its actual output in your final message.
+
+`;
+
+export const REVIEW_PREAMBLE = `Scope of this run: one read-only review, delegated by an orchestrating session.
+Do it directly in this run. I explicitly opt out of starting an orchestration or
+delegation workflow. Do not modify any file.
+
+`;
+
+export interface WorkerCall {
+  argv: string[];
+  // file fed on stdin (codex, claude) or passed as --prompt-file (grok)
+  promptPath: string;
+  stdin: boolean;
+}
+
+export function workerArgv(
+  to: Harness,
+  choice: ModelChoice,
+  opts: { cwd: string; promptPath: string; effort?: string; readOnly: boolean; lastMessagePath: string },
+): WorkerCall {
+  const effort = opts.effort ?? choice.effort;
+  if (to === "codex") {
+    const argv = ["codex", "exec"];
+    if (choice.model) argv.push("--model", choice.model);
+    if (effort) argv.push("-c", `model_reasoning_effort="${effort}"`);
+    argv.push(
+      "-c", "agents.enabled=false",
+      "-s", opts.readOnly ? "read-only" : "workspace-write",
+      "--skip-git-repo-check", "-C", opts.cwd,
+      "-o", opts.lastMessagePath, "-",
+    );
+    return { argv, promptPath: opts.promptPath, stdin: true };
+  }
+  if (to === "grok") {
+    // never pass a model: Grok workers inherit the session model
+    const argv = [
+      "grok", "--cwd", opts.cwd, "--prompt-file", opts.promptPath,
+      "--output-format", "json", "--no-subagents", "--always-approve",
+      "--sandbox", opts.readOnly ? "read-only" : "workspace",
+    ];
+    return { argv, promptPath: opts.promptPath, stdin: false };
+  }
+  const argv = ["claude", "-p", "--output-format", "json", "--disallowedTools", "Agent"];
+  if (choice.model) argv.push("--model", choice.model);
+  if (effort) argv.push("--effort", effort);
+  argv.push("--permission-mode", opts.readOnly ? "plan" : "acceptEdits");
+  return { argv, promptPath: opts.promptPath, stdin: true };
+}
+
+export interface Usage {
+  input?: number;
+  cached?: number;
+  output?: number;
+  total?: number;
+}
+
+// Last JSON object printed by grok / claude headless runs.
+function lastJson(log: string): any {
+  const start = log.lastIndexOf("\n{");
+  const text = start >= 0 ? log.slice(start + 1) : log.trimStart().startsWith("{") ? log : "";
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseWorkerOutput(to: Harness, log: string, lastMessage: string): { message: string; usage: Usage } {
+  if (to === "codex") {
+    const m = /tokens used\s*\n\s*([\d\s,.]+)/.exec(log);
+    const total = m ? Number(m[1].replace(/[^\d]/g, "")) : undefined;
+    return { message: lastMessage, usage: { total } };
+  }
+  const o = lastJson(log) ?? {};
+  const u = o.usage ?? {};
+  const cached = (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  return {
+    message: String(o.result ?? o.text ?? lastMessage ?? ""),
+    usage: {
+      input: u.input_tokens,
+      cached: cached || undefined,
+      output: u.output_tokens,
+      total: u.total_tokens ?? (u.input_tokens != null ? u.input_tokens + cached + (u.output_tokens ?? 0) : undefined),
+    },
+  };
+}
+
+const BLOCKED = /permission denied|not permitted|operation not allowed|blocked by (policy|sandbox|classifier)|denied by/i;
+const UNAVAILABLE = /not logged in|unauthori[sz]ed|\b401\b|authentication|model .* (not found|unavailable|not supported)|command not found|ENOENT/i;
+
+export type Status = "complete" | "noop" | "refused" | "blocked" | "failed" | "timeout" | "unavailable";
+
+export function classify(input: {
+  code: number | null;
+  timedOut: boolean;
+  spawnError?: string;
+  changed: boolean;
+  verifyOk: boolean | null;
+  log: string;
+}): Status {
+  if (input.timedOut) return "timeout";
+  if (input.spawnError || (!input.changed && input.code !== 0 && UNAVAILABLE.test(input.log))) return "unavailable";
+  if (!input.changed && BLOCKED.test(input.log)) return "blocked";
+  if (input.code !== 0) return "failed";
+  if (!input.changed) return input.verifyOk ? "noop" : "refused";
+  return input.verifyOk === false ? "failed" : "complete";
+}

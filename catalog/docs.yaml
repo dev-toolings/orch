@@ -1,0 +1,46 @@
+# Documentation sources for `orch docs`. One entry per stack (and version when
+# the docs are versioned). The corpus lives under ~/.local/share/orch/docs/<id>
+# and is indexed by ctx; the lead searches it on demand.
+#
+#   kind git   shallow sparse clone of `paths` (whole repo when omitted) at `ref`
+#   kind llms  one llms.txt (or llms-full.txt): an index of links, or full text
+#
+# Sources checked on 2026-10-19 (git ls-remote, HTTP 200). Stacks with no
+# canonical source yet (DevOps practice, MLOps) are listed in README.md.
+sources:
+  # ---- PHP
+  - { id: php, stack: php, kind: git, url: https://github.com/php/doc-en, ref: master, paths: [language, reference, features, security] }
+  - { id: symfony@7.4, stack: symfony, kind: git, url: https://github.com/symfony/symfony-docs, ref: "7.4" }
+  - { id: laravel@13, stack: laravel, kind: git, url: https://github.com/laravel/docs, ref: 13.x }
+  # ---- Node
+  - { id: nodejs, stack: nodejs, kind: git, url: https://github.com/nodejs/node, ref: main, paths: [doc/api] }
+  - { id: hono, stack: hono, kind: git, url: https://github.com/honojs/website, ref: main, paths: [docs] }
+  - { id: hono-llms, stack: hono, kind: llms, url: https://hono.dev/llms-full.txt }
+  - { id: fastify, stack: fastify, kind: git, url: https://github.com/fastify/fastify, ref: main, paths: [docs] }
+  - { id: express, stack: express, kind: git, url: https://github.com/expressjs/expressjs.com, ref: main, paths: [en] }
+  # ---- Front
+  - { id: nextjs, stack: nextjs, kind: git, url: https://github.com/vercel/next.js, ref: canary, paths: [docs] }
+  - { id: tanstack-start, stack: tanstack, kind: git, url: https://github.com/TanStack/router, ref: main, paths: [docs/start, docs/router] }
+  - { id: react, stack: react, kind: git, url: https://github.com/reactjs/react.dev, ref: main, paths: [src/content] }
+  - { id: vite, stack: vite, kind: git, url: https://github.com/vitejs/vite, ref: main, paths: [docs] }
+  # ---- Python
+  - { id: python, stack: python, kind: git, url: https://github.com/python/cpython, ref: main, paths: [Doc] }
+  - { id: fastapi, stack: fastapi, kind: git, url: https://github.com/fastapi/fastapi, ref: master, paths: [docs/en/docs] }
+  # ---- Ops (Docker includes Swarm under content/manuals/engine/swarm)
+  - { id: docker, stack: docker, kind: git, url: https://github.com/docker/docs, ref: main, paths: [content/manuals, content/reference, content/get-started] }
+  - { id: kubernetes, stack: kubernetes, kind: git, url: https://github.com/kubernetes/website, ref: main, paths: [content/en/docs] }
+  - { id: k3s, stack: k3s, kind: git, url: https://github.com/k3s-io/docs, ref: main, paths: [docs] }
+  # ---- Security
+  - { id: owasp-top10, stack: owasp, kind: git, url: https://github.com/OWASP/Top10, ref: master }
+  - { id: owasp-llm-top10, stack: owasp-ai, kind: git, url: https://github.com/OWASP/www-project-top-10-for-large-language-model-applications, ref: main }
+  - { id: owasp-ai-exchange, stack: owasp-ai, kind: git, url: https://github.com/OWASP/www-project-ai-security-and-privacy-guide, ref: main, paths: [content] }
+  - { id: owasp-cheatsheets, stack: owasp, kind: git, url: https://github.com/OWASP/CheatSheetSeries, ref: master, paths: [cheatsheets] }
+  # ---- Agents and prompting
+  - { id: claude-code, stack: claude, kind: llms, url: https://code.claude.com/docs/llms.txt }
+  - { id: claude-platform, stack: claude, kind: llms, url: https://platform.claude.com/llms.txt }
+  - { id: anthropic-courses, stack: claude, kind: git, url: https://github.com/anthropics/courses, ref: master }
+  - { id: claude-cookbooks, stack: claude, kind: git, url: https://github.com/anthropics/claude-cookbooks, ref: main }
+  - { id: codex-llms, stack: codex, kind: llms, url: https://developers.openai.com/codex/llms.txt }
+  - { id: codex, stack: codex, kind: git, url: https://github.com/openai/codex, ref: main, paths: [docs] }
+  - { id: openai-dev, stack: openai, kind: llms, url: https://developers.openai.com/llms.txt }
+  - { id: grok, stack: grok, kind: llms, url: https://docs.x.ai/llms.txt }

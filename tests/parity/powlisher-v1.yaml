@@ -1,0 +1,635 @@
+# Powlisher parity corpus, v1 (draft, not executable yet)
+#
+# Purpose: turn every behavior Powlisher states publicly about Emilien,
+# Juliette and Hublot into a testable scenario, map it to our lead, and
+# record whether v1 is expected to pass or is gated by a decision.
+#
+# Evidence: X posts collected by a headless Grok worker on 2026-10-16
+# (.ref/tasks/grok-powlisher.out.json). verified: true only when the post
+# was also found by an independent web search.
+#
+# Fields
+#   level   test plan level (docs/lead-design.md, "Comment tester"):
+#           0 unit, 2 sandbox discovery, 3 live lead session,
+#           4 live delegation, 5 uninstall
+#   gate    v1             expected to pass in v1
+#           partial        v1 passes an analog, not the full behavior
+#           autonomy       needs: lead runs unattended (24/7, hooks, night jobs)
+#           depth2         needs: workers may spawn their own workers
+#           out            out of scope (real-world actions, money, messaging)
+#   oracle  deterministic  checked from files or native logs
+#           judged         rubric scored by a model from another family
+#   probe   how the oracle reads the truth:
+#           claude-log  ~/.claude/projects/<cwd>/<session>/subagents/*.meta.json
+#                       (agentType, spawnDepth, worktreePath)
+#           codex-log   ~/.codex/sessions/**/rollout-*.jsonl session_meta
+#                       (source.subagent.thread_spawn.depth, agent_role)
+#           grok-log    ~/.grok/sessions/<cwd>/<id>/ (usage.json, subagent dirs)
+#           git         worktrees, branches, diff
+#           mem         orch mem notes (<state>/mem/*, <repo>/.orch/mem)
+#           orca        orca terminal list / read
+
+schema_version: 1
+corpus_id: powlisher-parity
+version: 1.0.0-draft
+created_at: 2026-10-16
+harnesses: [claude, codex, grok]
+
+families:
+  P: persona and context
+  M: memory
+  D: delegation
+  C: continuity
+  A: autonomy
+  O: observability
+  S: self-improvement and resilience
+  T: token budget
+
+cases:
+  # ---------------------------------------------------------------- P
+  - id: PW01
+    family: P
+    title: The lead states its role
+    source:
+      url: https://x.com/powl_d/status/2079992017694683636
+      date: 2026-10
+      quote: "Pour l'instant, Emilien tourne en full Fable. et spawn des agents orchestria sous OPUS 4.8"
+      verified: true
+    note: >-
+      2026-10-19 research found no evidence that Emilien "does not code"; the
+      confirmed pattern is a named persona above the model. Our lead is Marius.
+    level: 0
+    gate: v1
+    task: "Qui es-tu ?"
+    expected:
+      - answers as Marius, running on the model the harness reports (or "model unknown"), never as a bare harness name
+      - names itself the lead developer
+      - says it writes small changes itself and routes exploration and mechanical volume to lanes
+    oracle: judged
+
+  - id: PW02
+    family: P
+    title: Stack discovered, not hardcoded
+    source:
+      url: https://x.com/powlisher/status/2057634302528213357
+      date: 2026-05-22
+      quote: "Le plus fou c’est qu’Emilien partage notre système de mémoire persistante avec Juliette."
+      verified: false
+    level: 3
+    gate: v1
+    fixtures:
+      repo: demo with bun.lock (TypeScript) and pyproject.toml (Python)
+    task: "What stack does this project use, and which of my skills apply?"
+    expected:
+      - names Bun/TypeScript and Python from the lockfiles
+      - names the matching skills from its harness skill list
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW03
+    family: P
+    title: Operator preferences applied without being restated
+    source:
+      url: https://x.com/powlisher/status/2036381371640266789
+      date: 2026-03-24
+      quote: "une sorte de gazette interne qui alimente à la fois nos seconds cerveaux (Robin et moi) mais aussi l’ensemble de nos agents permanents"
+      verified: false
+    level: 3
+    gate: v1
+    task: "Add a script that installs dependencies and lints this project."
+    expected:
+      - uses bun, never npm or npx
+      - no em dash in produced prose
+      - does not start a dev server or a build
+    oracle: deterministic
+    probe: [git]
+
+  # ---------------------------------------------------------------- M
+  - id: PW10
+    family: M
+    title: Shared gazette, written in one session, used in another
+    source:
+      url: https://x.com/powlisher/status/2036381371640266789
+      date: 2026-03-24
+      quote: "Les agents pourront décider si ça les concernes ou pas et le rajouter à leurs cerveaux."
+      verified: false
+    level: 0
+    gate: v1
+    fixtures:
+      memory: operator-scope decision containing a nonce, saved by a plain session
+    task: "Which deployment target did I decide on for demo? Cite the source."
+    expected:
+      - returns the nonce value
+      - cites the note id it read
+    oracle: deterministic
+    probe: [mem]
+
+  - id: PW11
+    family: M
+    title: Memory shared across harnesses
+    source:
+      url: https://x.com/powlisher/status/2057634302528213357
+      date: 2026-05-22
+      quote: "Emilien partage notre système de mémoire persistante avec Juliette."
+      verified: false
+    level: 0
+    gate: v1
+    fixtures:
+      memory: project decision saved from a Codex lead session
+    task: "Run from a Grok lead session: what did we decide about the export format?"
+    expected:
+      - Grok lead returns the decision saved by Codex, with provenance harness=codex
+    oracle: deterministic
+    probe: [mem]
+
+  - id: PW12
+    family: M
+    title: The lead decides what is worth keeping
+    source:
+      url: https://x.com/powlisher/status/2036381371640266789
+      date: 2026-03-24
+      quote: "Les agents pourront décider si ça les concernes ou pas"
+      verified: false
+    level: 3
+    gate: v1
+    task: "Session with one durable decision and three trivial facts, then end."
+    expected:
+      - exactly the durable decision is saved (one orch mem note)
+      - trivia is not saved
+    oracle: judged
+    probe: [mem]
+
+  - id: PW13
+    family: M
+    title: Memory private to the lead
+    source:
+      url: https://x.com/powlisher/status/2036381371640266789
+      date: 2026-03-24
+      quote: "Chaque agent a sa propre mémoire, ses propres sources et ses propres liaisons."
+      verified: false
+    level: 0
+    gate: v1
+    task: "A note saved by the lead is invisible to a plain session in the same project."
+    expected:
+      - the note is in the lead scope: orch mem search from a plain session returns nothing
+    oracle: deterministic
+    probe: [mem]
+
+  - id: PW14
+    family: M
+    title: Gets better with use
+    source:
+      url: https://x.com/powlisher/status/2057634302528213357
+      date: 2026-05-22
+      quote: "il devient meilleur expert du domaine et meilleur manager d'agents"
+      verified: false
+      note: wording reported by Grok as a summary, not a verbatim quote
+    level: 3
+    gate: v1
+    task: "Session 1: correct the lead on a method. Session 2: same kind of task."
+    expected:
+      - session 1 saves a lead-scope note or updates a skill file
+      - session 2 loads that skill revision and applies it
+    oracle: deterministic
+    probe: [mem]
+
+  - id: PW15
+    family: M
+    title: Reference library consulted before generating UI
+    source:
+      url: https://x.com/powlisher/status/2030591148746473502
+      date: 2026-03-08
+      quote: "Ajout d’une mémoire persistante qui va piocher via un MCP dans une librairie d’inspirations UI avant de générer quoi que ce soit."
+      verified: false
+    level: 3
+    gate: partial
+    task: "Design the settings page for demo."
+    expected:
+      - searches skills for UI references before writing code
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  # ---------------------------------------------------------------- D
+  - id: PW20
+    family: D
+    title: Small change stays with the lead, volume is routed
+    source:
+      url: https://x.com/powlisher/status/2067257519391625418
+      date: 2026-06-17
+      quote: "Il a spawn 4 sessions Orchestria qu’il supervise en temps réel."
+      verified: false
+    divergence: Emilien delegates everything; ours keeps small edits to avoid the worker prefix cost.
+    level: 4
+    gate: v1
+    task: "(a) Fix a one-line typo. (b) Add a CRUD module across 8 new files."
+    expected:
+      - (a) zero subagents, zero lanes
+      - (b) exactly one lane run with a complete spec file, report read, no worker log read
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW21
+    family: D
+    title: Delegation on request to a native role
+    source:
+      url: https://x.com/powlisher/status/2067257519391625418
+      date: 2026-06-17
+      quote: "chaque session peut à son tour faire spawn des agents spécialisés selon le besoin : frontend, backend, architecture, design, QA, recherche produit"
+      verified: false
+    level: 4
+    gate: v1
+    task: "Delegate the exploration of the export path to an explorer."
+    expected:
+      - exactly one subagent of role explorer, depth 1
+      - its report cites files; the lead integrates it
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW22
+    family: D
+    title: Lane to another harness in a worktree
+    source:
+      url: https://x.com/powlisher/status/2073316782631248224
+      date: 2026-07-04
+      quote: "je parle plus Emilien qui lui manage des sessions Claude"
+      verified: false
+    level: 4
+    gate: v1
+    task: "From a Claude lead: have Codex implement the --json flag."
+    expected:
+      - one codex run, in its own worktree, launched by lane run
+      - the diff comes back to the lead, the worktree is removed after integration
+    oracle: deterministic
+    probe: [codex-log, git]
+
+  - id: PW23
+    family: D
+    title: Parallel audits
+    source:
+      url: https://x.com/powlisher/status/2057634302528213357
+      date: 2026-05-22
+      quote: "lance des audits parallèles"
+      verified: false
+    level: 4
+    gate: v1
+    task: "Run three audits in parallel: security, tests, performance."
+    expected:
+      - three workers overlap in time, none spawns a child
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW24
+    family: D
+    title: Branch race across models
+    source:
+      url: https://x.com/powlisher/status/2057634302528213357
+      date: 2026-05-22
+      quote: "compare plusieurs branches concurrentes et choisit les meilleurs outputs"
+      verified: false
+    level: 4
+    gate: v1
+    task: "Give the same brief to Codex and Grok, compare, keep the best."
+    expected:
+      - two worktrees, two diffs, one kept with a written justification
+      - the losing worktree and branch are removed
+    oracle: judged
+    probe: [git]
+
+  - id: PW25
+    family: D
+    title: A second team checks the first
+    source:
+      url: https://x.com/powlisher/status/2057634302528213357
+      date: 2026-05-22
+      quote: "Et quand il doute… il mandate une autre équipe IA pour vérifier la première."
+      verified: false
+    level: 4
+    gate: v1
+    task: "Have the diff reviewed by a model of another family."
+    expected:
+      - reviewer runs on a different harness than the implementer
+      - findings are reported, not silently applied
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW26
+    family: D
+    title: Two-level delegation
+    source:
+      url: https://x.com/powlisher/status/2067257519391625418
+      date: 2026-06-17
+      quote: "chaque session peut à son tour faire spawn des agents spécialisés"
+      verified: false
+    level: 4
+    gate: depth2
+    task: "A worker asks to spawn its own helper."
+    expected:
+      - v1 expected result is a refusal (depth 1); kept to measure the gap
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW27
+    family: D
+    title: Concurrency budget
+    source:
+      url: https://x.com/powlisher/status/2067257519391625418
+      date: 2026-06-17
+      quote: "Émilien n’écrit pas du code. Émilien dirige une armée."
+      verified: false
+    divergence: no stated cap at Powlisher; ours is 5.
+    level: 4
+    gate: v1
+    task: "Delegate eight independent file audits."
+    expected:
+      - never more than five workers at once; the rest wait or run in a second batch
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW28
+    family: D
+    title: Decisions escalate to the operator
+    source:
+      url: https://x.com/powlisher/status/2105603031177863350
+      date: 2026-10-01
+      quote: "m’informe si j’ai des décisions à prendre"
+      verified: false
+    level: 4
+    gate: v1
+    task: "Delegated task hits a schema change."
+    expected:
+      - the worker stops and reports; the lead asks the operator before continuing
+    oracle: judged
+
+  # ---------------------------------------------------------------- C
+  - id: PW30
+    family: C
+    title: Resume after interruption
+    source:
+      url: https://x.com/powlisher/status/2105603031177863350
+      date: 2026-10-01
+      quote: "Quand il sera reconnecté il reprend"
+      verified: false
+    level: 0
+    gate: v1
+    task: "Kill the lead mid-task, open a new lead session: where were we?"
+    expected:
+      - runs orch mem recent, states the stopping point
+    oracle: deterministic
+    probe: [mem]
+
+  - id: PW31
+    family: C
+    title: Recap when the operator leaves
+    source:
+      url: https://x.com/powlisher/status/2105603031177863350
+      date: 2026-10-01
+      quote: "quand je ferme le Mac, il se met en pause et me shoote un récap de ce sur quoi il travaille"
+      verified: false
+    level: 3
+    gate: autonomy
+    expected:
+      - recap pushed on session end without being asked
+    oracle: deterministic
+
+  - id: PW32
+    family: C
+    title: Check and relaunch workers on reconnect
+    source:
+      url: https://x.com/powlisher/status/2105603031177863350
+      date: 2026-10-01
+      quote: "Check tous les sous agents les relances aux besoins"
+      verified: false
+    level: 4
+    gate: autonomy
+    expected:
+      - lists live and dead workers, relaunches failed ones
+    oracle: deterministic
+    probe: [orca]
+
+  # ---------------------------------------------------------------- A
+  - id: PW40
+    family: A
+    title: Long unattended missions on a server
+    source:
+      url: https://x.com/powlisher/status/2105622398087442482
+      date: 2026-10-01
+      quote: "Emilien a une version Mac mini qui permet de faire des missions longues"
+      verified: false
+    level: 4
+    gate: autonomy
+    oracle: deterministic
+
+  - id: PW41
+    family: A
+    title: Night backlog in the tracker
+    source:
+      url: https://x.com/powlisher/status/2107953531810615715
+      date: 2026-10-07
+      quote: "Il m’a carrément créé mon Linear pour préparer mes 4 prochains mois."
+      verified: false
+    level: 4
+    gate: autonomy
+    note: our tracker is OpenTrack
+    oracle: judged
+
+  - id: PW42
+    family: A
+    title: Reachable from a messaging app
+    source:
+      url: https://x.com/powlisher/status/2107931757123453151
+      date: 2026-10-07
+      quote: "Émilien sur Telegram qui veut me montrer des trucs"
+      verified: false
+    level: 3
+    gate: out
+    oracle: deterministic
+
+  - id: PW43
+    family: A
+    title: Real-world actions (mail, payment, claims)
+    source:
+      url: https://x.com/powlisher/status/2037501673791266931
+      date: 2026-03-27
+      quote: "Elle a maintenant une carte bleue."
+      verified: false
+    level: 4
+    gate: out
+    oracle: deterministic
+
+  # ---------------------------------------------------------------- O
+  - id: PW50
+    family: O
+    title: See every worker live
+    source:
+      url: https://x.com/powlisher/status/2100114304330830305
+      date: 2026-09-16
+      quote: "je peux avoir une fenêtre sur chaque agent"
+      verified: false
+    level: 4
+    gate: partial
+    note: analog is Orca terminals plus lane status, not a custom UI
+    expected:
+      - every lane worker shows up in orca terminal list or in lane status
+    oracle: deterministic
+    probe: [orca, git]
+
+  - id: PW51
+    family: O
+    title: Open a worker terminal live
+    source:
+      url: https://x.com/powlisher/status/2100114304330830305
+      date: 2026-09-16
+      quote: "si besoin, ouvrir son terminal en live"
+      verified: false
+    level: 4
+    gate: partial
+    expected:
+      - a lane sent to a live Orca terminal is readable with orca terminal read
+    oracle: deterministic
+    probe: [orca]
+
+  # ---------------------------------------------------------------- S
+  - id: PW60
+    family: S
+    title: Self-improvement as a proposal
+    source:
+      url: https://x.com/powlisher/status/2043789685583966476
+      date: 2026-04-13
+      quote: "Juliette qui détecte ses limites, écrit son propre brief et lance Orchestria pour s’auto-modifier"
+      verified: false
+    divergence: Juliette changes herself in prod; ours proposes a diff to its own catalog.
+    level: 4
+    gate: v1
+    task: "The lead hits a recurring limit of its own prompt."
+    expected:
+      - writes a brief and a diff against catalog/lead.md in this repo
+      - does not install it without the operator
+    oracle: judged
+    probe: [git]
+
+  - id: PW61
+    family: S
+    title: Failover to another harness
+    source:
+      url: https://x.com/powlisher/status/2040785020965503453
+      date: 2026-04-05
+      quote: "Elle a un mode LLM local sou QWEN 3.5 en cas de failover Claude"
+      verified: false
+    level: 3
+    gate: v1
+    task: "Same lead task run on Claude, Codex and Grok."
+    expected:
+      - all three load the same lead prompt
+    oracle: judged
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: PW62
+    family: S
+    title: Cheaper profile on demand
+    source:
+      url: https://x.com/powl_d/status/2060067617172332654
+      date: 2026-05
+      quote: "Le frérot downgrade les modèles pour économiser sur les tests e2e"
+      verified: true
+    level: 0
+    gate: v1
+    task: "orch install --profile lean --dry-run"
+    expected:
+      - worker and scout tiers resolve to the cheaper models of the lean profile
+    oracle: deterministic
+
+  # ---------------------------------------------------------------- T
+  # Token budget. No Powlisher source: these guard the operator's goal of
+  # saving tokens end to end (plan v4, audit of 2026-10-18).
+  - id: T01
+    family: T
+    title: Global instructions stay small
+    level: 0
+    gate: v1
+    expected:
+      - ~/.claude/CLAUDE.md is at most 4096 bytes (35649 before the split)
+    oracle: deterministic
+
+  - id: T02
+    family: T
+    title: Lane wrapper makes no model call
+    level: 0
+    gate: v1
+    expected:
+      - lane spawns only the target harness CLI; no other model process
+    oracle: deterministic
+
+  - id: T03
+    family: T
+    title: Lane report is bounded
+    level: 0
+    gate: v1
+    expected:
+      - report printed to the lead is at most report_max_bytes of the profile
+      - full logs are on disk, path given in the report
+    oracle: deterministic
+
+  - id: T04
+    family: T
+    title: Lead never ingests worker terminals or the orca-cli skill
+    level: 4
+    gate: v1
+    expected:
+      - no orca terminal read and no orca-cli skill load in the lead transcript
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: T05
+    family: T
+    title: Routing pays off on volume, not on small edits
+    level: 4
+    gate: v1
+    task: "Same two tasks as PW20, run once direct and once routed."
+    expected:
+      - small edit, direct is cheaper in total tokens
+      - 8-file module, routed costs fewer tokens on the lead's quota at equal ACCEPT result
+      - report shows total, per quota, cache included
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]
+
+  - id: T06
+    family: T
+    title: Worker usage is reported
+    level: 4
+    gate: v1
+    expected:
+      - each lane report includes the worker's input, cached and output tokens
+    oracle: deterministic
+
+  - id: T07
+    family: T
+    title: No cross review outside risk
+    level: 4
+    gate: v1
+    task: "Ordinary feature with no migration, security path or API change."
+    expected:
+      - zero lane review runs
+    oracle: deterministic
+
+  - id: T08
+    family: T
+    title: Docs corpus is declared, versioned and searched on demand
+    level: 0
+    gate: v1
+    task: "catalog/docs.yaml lists one source per stack; the lead prompt reads docs through orch docs search, never by loading them"
+    expected:
+      - the manifest parses, ids are unique, git sources have a ref
+    oracle: deterministic
+    probe: [git]
+
+  - id: PW63
+    family: S
+    title: Framework practice answered from the docs corpus
+    level: 3
+    gate: v1
+    task: "Cite moi la bonne pratique de Symfony sous ADR"
+    expected:
+      - runs orch docs search --stack symfony before answering
+      - cites symfony@7.4/controller/service.rst (ADR pattern, invokable controllers)
+    oracle: deterministic
+    probe: [claude-log, codex-log, grok-log]

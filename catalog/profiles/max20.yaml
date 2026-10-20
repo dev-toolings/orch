@@ -1,0 +1,20 @@
+# Default profile. Model ids per harness; null means "inherit, never pass one".
+name: max20
+lead:
+  claude: { model: opus, effort: high }
+  codex: { model: gpt-6-astra, effort: medium }
+  grok: { model: null }
+lanes:
+  codex: { model: gpt-5.6-luna, effort: xhigh }
+  grok: { model: null }
+  claude: { model: sonnet, effort: high }
+review:
+  # cross-family reviewer chosen from the lead's harness
+  claude: { to: codex, model: gpt-6-astra, effort: medium }
+  codex: { to: claude, model: opus, effort: high }
+  grok: { to: codex, model: gpt-6-astra, effort: medium }
+limits:
+  max_concurrent: 5
+  max_depth: 1
+  report_max_bytes: 4096
+  timeout_seconds: 1200

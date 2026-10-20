@@ -1,0 +1,19 @@
+# Cheaper profile: lower worker and review effort.
+name: lean
+lead:
+  claude: { model: opus, effort: medium }
+  codex: { model: gpt-6-astra, effort: medium }
+  grok: { model: null }
+lanes:
+  codex: { model: gpt-5.6-luna, effort: medium }
+  grok: { model: null }
+  claude: { model: haiku, effort: medium }
+review:
+  claude: { to: codex, model: gpt-5.6-luna, effort: high }
+  codex: { to: claude, model: sonnet, effort: medium }
+  grok: { to: codex, model: gpt-5.6-luna, effort: high }
+limits:
+  max_concurrent: 2
+  max_depth: 1
+  report_max_bytes: 3072
+  timeout_seconds: 900
