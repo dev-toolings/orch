@@ -52,7 +52,12 @@ probe() {
   fi
 }
 
-ours() { [ -f "$PROFILE" ] && head -n1 "$PROFILE" | grep -qxF "$MARK"; }
+# The profile may be root-only (older installs of this script): read it as
+# root when needed, without a password prompt unless asked (ours prompt).
+ours() {
+  [ -f "$PROFILE" ] || return 1
+  { head -n1 "$PROFILE" 2>/dev/null || sudo $([ "${1:-}" = prompt ] || echo -n) head -n1 "$PROFILE" 2>/dev/null; } | grep -qxF "$MARK"
+}
 
 install() {
   if ! restricted; then
@@ -60,7 +65,7 @@ install() {
     probe
     return
   fi
-  if [ -f "$PROFILE" ] && ! ours; then
+  if [ -f "$PROFILE" ] && ! ours prompt; then
     echo "refusing: $PROFILE exists and was not written by this script" >&2
     exit 1
   fi
@@ -70,13 +75,14 @@ install() {
     echo "disabled $UBUNTU"
   fi
   profile_body | sudo tee "$PROFILE" > /dev/null
+  sudo chmod 644 "$PROFILE"
   sudo apparmor_parser -r "$PROFILE"
   echo "loaded $PROFILE"
   probe
 }
 
 uninstall() {
-  if ours; then
+  if ours prompt; then
     sudo apparmor_parser -R "$PROFILE" 2>/dev/null || true
     sudo rm -f "$PROFILE"
     echo "removed $PROFILE"
@@ -93,7 +99,10 @@ uninstall() {
 
 status() {
   echo "kernel.apparmor_restrict_unprivileged_userns = $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
-  if ours; then echo "$PROFILE: installed by this script"; elif [ -f "$PROFILE" ]; then echo "$PROFILE: present, not ours"; else echo "$PROFILE: absent"; fi
+  if ours; then echo "$PROFILE: installed by this script"
+  elif [ -f "$PROFILE" ] && [ ! -r "$PROFILE" ]; then echo "$PROFILE: present, root-only (--install or --uninstall checks it with sudo)"
+  elif [ -f "$PROFILE" ]; then echo "$PROFILE: present, not written by this script"
+  else echo "$PROFILE: absent"; fi
   if [ -L "$DISABLED" ]; then echo "$UBUNTU: disabled"; else echo "$UBUNTU: active"; fi
   probe
 }
