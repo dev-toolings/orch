@@ -5,6 +5,16 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export type Which = (bin: string) => boolean;
+export type Probe = () => boolean;
+
+// Claude Code's sandbox runs its seccomp helper inside bwrap, and that helper
+// opens a second user namespace. Ubuntu 24.04+ (apparmor_restrict_unprivileged_userns
+// = 1, profile bwrap-userns-restrict) strips capabilities from bwrap's children,
+// so the helper fails and every sandboxed command with it. The same nesting,
+// without Claude Code:
+export const nestedUserns: Probe = () =>
+  spawnSync("bwrap", ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-user",
+    "unshare", "--user", "--map-root-user", "true"], { stdio: "ignore" }).status === 0;
 
 export const onPath: Which = (bin) => spawnSync("sh", ["-c", `command -v ${bin}`], { stdio: "ignore" }).status === 0;
 
@@ -17,7 +27,7 @@ export function missingSystemPackages(which: Which = onPath): string[] {
   return Object.entries(CLAUDE_SANDBOX_PACKAGES).filter(([bin]) => !which(bin)).map(([, pkg]) => pkg);
 }
 
-export function doctorChecks(home: string, which: Which = onPath): { ok: boolean; lines: string[] } {
+export function doctorChecks(home: string, which: Which = onPath, nested: Probe = nestedUserns): { ok: boolean; lines: string[] } {
   const lines: string[] = [];
   let ok = true;
   const check = (label: string, missing: string[], fix: string) => {
@@ -33,6 +43,10 @@ export function doctorChecks(home: string, which: Which = onPath): { ok: boolean
   const claudeMissing = absent(["claude", "git"]);
   if (process.platform === "linux") claudeMissing.push(...absent(["bwrap", "socat"]));
   check("claude worker (sandboxed Bash)", claudeMissing, "sudo apt install bubblewrap socat");
+  if (process.platform === "linux" && !claudeMissing.length) {
+    check("claude worker sandbox can nest a user namespace", nested() ? [] : ["nested user namespace in bwrap"],
+      "AppArmor blocks it: see 'Ubuntu 24.04 and later' in https://code.claude.com/docs/en/sandboxing");
+  }
   // A Codex lead runs lane and orch only through this exec-policy rule.
   const rules = join(home, ".codex", "rules", "orch.rules");
   check("codex lead rule (lane, orch outside the sandbox)", existsSync(rules) ? [] : ["~/.codex/rules/orch.rules"], "orch install");

@@ -123,13 +123,18 @@ describe("external workers", () => {
 
   test("doctor names each missing piece", () => {
     const home = mkdtempSync(join(tmpdir(), "doctor-"));
-    const none = doctorChecks(home, (b) => b !== "socat");
+    const none = doctorChecks(home, (b) => b !== "socat", () => true);
     expect(none.ok).toBe(false);
     expect(none.lines.join("\n")).toContain("orch.rules");
     if (process.platform === "linux") expect(none.lines.join("\n")).toContain("missing socat");
     mkdirSync(join(home, ".codex", "rules"), { recursive: true });
     writeFileSync(join(home, ".codex", "rules", "orch.rules"), "x");
-    expect(doctorChecks(home, () => true)).toEqual({ ok: true, lines: expect.any(Array) });
+    expect(doctorChecks(home, () => true, () => true)).toEqual({ ok: true, lines: expect.any(Array) });
+    if (process.platform === "linux") {
+      const blocked = doctorChecks(home, () => true, () => false);
+      expect(blocked.ok).toBe(false);
+      expect(blocked.lines.join("\n")).toContain("nested user namespace");
+    }
     rmSync(home, { recursive: true, force: true });
   });
 });
