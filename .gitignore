@@ -4,5 +4,6 @@ node_modules/
 .grok/*
 !.grok/skills/
 *.log
-.orch/
+.orch/*
+!.orch/mem/
 .ctx/

@@ -15,9 +15,10 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   It sets `ORCH_LEAD=1` and `ORCH_HARNESS`; that is how `orch mem` tells a
   lead session from a plain one.
 - `src/mem.ts` stores one Markdown note per durable decision in three scopes
-  (project in the repo, operator and lead under the state dir). Recall is on
-  demand only: nothing is injected at launch. Workers (`ORCH_LANE=1`) never
-  write.
+  (project in `.orch/mem` of the main worktree, versioned; operator and lead
+  under the state dir); notes are superseded or forgotten, never deleted.
+  Recall is on demand only: nothing is injected at launch. Workers
+  (`ORCH_LANE=1`) never write.
 - Project skills live once in `.agents/skills/<name>/` (read by Codex);
   `.claude/skills/<name>` and `.grok/skills/<name>` are relative symlinks to
   it. Grok loads them only once the folder is trusted: `grok --trust -p

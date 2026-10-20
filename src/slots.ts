@@ -12,7 +12,7 @@ function stale(path: string): boolean {
   try {
     return Date.now() - statSync(path).mtimeMs > STALE_MS;
   } catch {
-    return true;
+    return false; // gone: its owner released it, retry instead of removing a new one
   }
 }
 
@@ -38,8 +38,12 @@ function takeLock(dir: string): string | null {
       made = true;
     } catch {}
     if (made) {
-      writeFileSync(join(lock, "owner"), String(process.pid));
-      return lock;
+      try {
+        writeFileSync(join(lock, "owner"), String(process.pid));
+        return lock;
+      } catch {
+        continue; // removed under us as stale: take it again
+      }
     }
     const owner = lockOwner(lock);
     if (owner ? !alive(owner) : stale(lock)) {

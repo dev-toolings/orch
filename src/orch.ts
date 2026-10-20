@@ -13,7 +13,7 @@ import { doctorChecks, missingSystemPackages, onPath } from "./doctor.ts";
 import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs.ts";
 import { bound } from "./lane.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./manifest.ts";
-import { addNote, callerFromEnv, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote } from "./mem.ts";
+import { addNote, callerFromEnv, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem.ts";
 import { loadProfile } from "./profile.ts";
 import { render } from "./render.ts";
 
@@ -68,7 +68,7 @@ function mem(args: string[]) {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { scope: { type: "string" }, tags: { type: "string" }, limit: { type: "string" } },
+    options: { scope: { type: "string" }, tags: { type: "string" }, limit: { type: "string" }, all: { type: "boolean" }, reason: { type: "string" } },
   });
   const caller = callerFromEnv();
   const max = loadProfile().limits.report_max_bytes;
@@ -80,14 +80,29 @@ function mem(args: string[]) {
     const body = text === "-" ? readFileSync(0, "utf8") : text;
     const tags = values.tags ? values.tags.split(",").map((t) => t.trim()).filter(Boolean) : [];
     const n = addNote({ body, scope: scope ?? "project", tags }, caller);
+    if (n.warning) console.error(n.warning);
     console.log(`saved ${n.id} (${n.scope})`);
   } else if (sub === "search" || sub === "recent") {
-    const notes = sub === "search" ? searchNotes(text, caller, { scope, limit }) : recentNotes(caller, { scope, limit });
+    const notes = sub === "search" ? searchNotes(text, caller, { scope, limit, all: values.all }) : recentNotes(caller, { scope, limit, all: values.all });
     console.log(bound(notes.length ? notes.map(formatLine).join("\n") : "no note", max));
   } else if (sub === "show") {
     const n = showNote(text, caller);
     if (!n) throw new Error(`mem: no note ${text}`);
     console.log(bound(formatNote(n), max));
+  } else if (sub === "supersede") {
+    const id = positionals[0];
+    const supersedeText = positionals.slice(1).join(" ");
+    if (!id) throw new Error("mem supersede: missing note id");
+    const body = supersedeText === "-" ? readFileSync(0, "utf8") : supersedeText;
+    const tags = values.tags ? values.tags.split(",").map((t) => t.trim()).filter(Boolean) : [];
+    const n = supersedeNote(id, { body, tags }, caller);
+    if (n.warning) console.error(n.warning);
+    console.log(`saved ${n.id} (${n.scope}), supersedes ${id}`);
+  } else if (sub === "forget") {
+    const id = positionals[0];
+    if (!id) throw new Error("mem forget: missing note id");
+    const n = forgetNote(id, values.reason ?? "", caller);
+    console.log(`forgot ${n.id}`);
   } else {
     console.log(MEM_USAGE);
     process.exitCode = 2;
@@ -137,6 +152,6 @@ else if (cmd === "doctor") {
   if (!ok) process.exitCode = 1;
 }
 else {
-  console.log("usage: orch install [--profile p] [--dry-run] [--no-system-deps] | diff | uninstall [--dry-run] | mem add|search|recent|show | docs update|status|search | doctor");
+  console.log("usage: orch install [--profile p] [--dry-run] [--no-system-deps] | diff | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget | docs update|status|search | doctor");
   process.exitCode = 2;
 }

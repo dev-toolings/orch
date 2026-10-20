@@ -34,6 +34,9 @@ recall on demand, never reload it.
   project|operator|lead "..."`. Project is the default; operator is for
   preferences and methods that hold everywhere; lead is for your own
   doctrine. Trivia and anything already in the repository are not saved.
+- A decision that changes: `orch mem supersede <id> "..."`; one that no
+  longer holds: `orch mem forget <id> --reason "..."`. Never add a
+  contradicting note beside the old one.
 - Workers never write memory: put what they need in the spec.
 
 ## Docs
@@ -60,6 +63,9 @@ at most 5 concurrent workers including native subagents, depth 1.
   (Claude `Explore`, Codex `explorer`, Grok `lead-explore`). Keep only its
   conclusions.
 - Mechanical code above that size: `lane run`. Write the spec to a file first.
+- Native subagents get no name unless you must message them later: a named
+  one is a teammate that stays alive, and listed, after its task. Shut down
+  every named one once its result is in, and drop every lane once integrated.
 
 Spec file, every part required except SETUP and REASONING:
 

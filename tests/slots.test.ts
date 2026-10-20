@@ -5,28 +5,36 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reserveSlot } from "../src/slots.ts";
 
-function runReservation(state: string, id: string, modulePath: string): Promise<string> {
+// Each child holds its slot until the parent creates the release file, so the
+// check does not depend on every child starting within a fixed window.
+function runReservation(state: string, id: string, modulePath: string, release: string): { printed: Promise<string>; closed: Promise<void> } {
   const script = `
+    import { existsSync } from "node:fs";
     import { reserveSlot } from ${JSON.stringify(modulePath)};
     const slot = reserveSlot(process.env.ORCH_SLOT_STATE!, 3, process.env.ORCH_SLOT_ID!);
     console.log(slot === null ? "null" : String(slot));
-    if (slot !== null) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    const deadline = Date.now() + 20000;
+    while (slot !== null && !existsSync(process.env.ORCH_SLOT_RELEASE!) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
   `;
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", script], {
-      env: { ...process.env, ORCH_SLOT_STATE: state, ORCH_SLOT_ID: id },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`reservation child failed (${code}): ${stderr}`));
-    });
+  const child = spawn(process.execPath, ["-e", script], {
+    env: { ...process.env, ORCH_SLOT_STATE: state, ORCH_SLOT_ID: id, ORCH_SLOT_RELEASE: release },
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let stdout = "";
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  const printed = new Promise<string>((resolve, reject) => {
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.includes("\n")) resolve(stdout.trim());
+    });
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve(stdout.trim()) : reject(new Error(`reservation child failed (${code}): ${stderr}`))));
+  });
+  const closed = new Promise<void>((resolve) => child.on("close", () => resolve()));
+  return { printed, closed };
 }
 
 describe("slots", () => {
@@ -34,7 +42,11 @@ describe("slots", () => {
     const root = mkdtempSync(join(tmpdir(), "orch-slots-"));
     const state = join(root, "state");
     const modulePath = join(process.cwd(), "src/slots.ts");
-    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => runReservation(state, String(i), modulePath)));
+    const release = join(root, "release");
+    const children = Array.from({ length: 12 }, (_, i) => runReservation(state, String(i), modulePath, release));
+    const results = await Promise.all(children.map((c) => c.printed));
+    writeFileSync(release, "");
+    await Promise.all(children.map((c) => c.closed));
     const claimed = results.filter((slot) => slot !== "null");
     expect(claimed).toHaveLength(3);
     expect(new Set(claimed).size).toBe(claimed.length);
