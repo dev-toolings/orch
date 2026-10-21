@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadSources, readMeta, searchDocs, type Source, statusLines, updateSource } from "../src/docs.ts";
+import { loadSources, readMeta, searchDocs, type Source, statusLines, updateSource } from "../src/docs/docs.ts";
 
 let root: string;
 let docs: string;

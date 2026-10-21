@@ -72,7 +72,7 @@ Versions locales : Claude Code 2.1.301, codex-cli 0.162.1, grok 1.0.52.
   `model_provider`, `mcp_servers`, service tier.
 - Un agent nommé `explorer` ou `worker` remplace le built-in du même nom.
 - Ton `~/.codex/config.toml` : `model = "gpt-6-astra"`, effort `medium`,
-  `[agents] default_subagent_model = "gpt-5.6-luna"`, effort `xhigh`,
+  `[agents] default_subagent_model = "gpt-6-luna"`, effort `xhigh`,
   `max_concurrent_threads_per_session = 5`, `max_depth = 1`.
   `~/.codex/agents/` est vide.
 
@@ -156,7 +156,7 @@ agent, signalé dans la sortie de `install`).
 name: max20
 models:                        # tier -> modèle, par harness
   claude: { lead: opus, worker: sonnet, scout: haiku }
-  codex:  { lead: gpt-6-astra, worker: gpt-5.6-luna, scout: gpt-5.6-luna }
+  codex:  { lead: gpt-6-astra, worker: gpt-6-luna, scout: gpt-6-luna }
   grok:   {}                   # vide = hériter, jamais de modèle écrit
 effort:                        # tier -> effort, par harness
   claude: { worker: high, scout: medium }

@@ -28,7 +28,7 @@ typecheck: ## Type-check sources and tests
 	@bunx tsc --noEmit && printf "$(C_OK)[make] typecheck ok$(C_RESET)\n"
 
 parity: ## Powlisher parity matrix, free levels 0-2
-	@bun src/parity.ts --level 2
+	@bun src/checks/parity.ts --level 2
 
 check: typecheck test parity ## Typecheck, tests and parity matrix
 
@@ -37,7 +37,7 @@ doctor: ## Can each worker harness run a lane here (no model call)
 
 smoke: ## Real lanes x3 workers: job + confinement probes (BILLABLE, model calls)
 	@printf "$(C_WARN)[make] smoke calls codex, grok and claude for real$(C_RESET)\n"
-	@bun src/smoke.ts && printf "$(C_OK)[make] smoke ok$(C_RESET)\n" || { printf "$(C_ERR)[make] smoke failed$(C_RESET)\n"; exit 1; }
+	@bun src/checks/smoke.ts && printf "$(C_OK)[make] smoke ok$(C_RESET)\n" || { printf "$(C_ERR)[make] smoke failed$(C_RESET)\n"; exit 1; }
 
 # ─── Lanes ───────────────────────────────────────────────────────────────────
 

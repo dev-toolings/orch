@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reserveSlot } from "../src/slots.ts";
+import { reserveSlot } from "../src/lanes/slots.ts";
 
 // Each child holds its slot until the parent creates the release file, so the
 // check does not depend on every child starting within a fixed window.
@@ -41,7 +41,7 @@ describe("slots", () => {
   test("concurrent reservations are unique and a fresh incomplete slot is protected", async () => {
     const root = mkdtempSync(join(tmpdir(), "orch-slots-"));
     const state = join(root, "state");
-    const modulePath = join(process.cwd(), "src/slots.ts");
+    const modulePath = join(process.cwd(), "src/lanes/slots.ts");
     const release = join(root, "release");
     const children = Array.from({ length: 12 }, (_, i) => runReservation(state, String(i), modulePath, release));
     const results = await Promise.all(children.map((c) => c.printed));
@@ -78,3 +78,12 @@ test("the slot mutex is never taken from a live owner, however old; a dead owner
     rmSync(state, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("a shrunk budget counts a held slot above it: no extra worker is admitted", () => {
+  const state = mkdtempSync(join(tmpdir(), "slots-shrink-"));
+  expect(reserveSlot(state, 2, "a")).toBe(0);
+  expect(reserveSlot(state, 2, "b")).toBe(1);
+  rmSync(join(state, "slots", "0"), { recursive: true, force: true }); // a finished, b still holds slot 1
+  expect(reserveSlot(state, 1, "c")).toBeNull();
+  expect(reserveSlot(state, 2, "c")).toBe(0);
+});

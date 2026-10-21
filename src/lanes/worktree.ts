@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { git } from "./git.ts";
+import { git } from "../core/git.ts";
 
 // Snapshot budget: past this, `git add -A` would copy a dataset into the
 // caller's object store and hold a lane slot for minutes.
