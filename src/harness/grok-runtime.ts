@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { ROOT } from "./profile.ts";
-import { stateDir } from "./paths.ts";
+import { ROOT } from "../core/profile.ts";
+import { stateDir } from "../core/paths.ts";
 
 // Grok workers run under orch's profiles (`--sandbox orch-lane|orch-review`).
 // Grok resolves a name the user file lacks from the project's

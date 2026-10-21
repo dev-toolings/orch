@@ -4,8 +4,16 @@
 // no agent file, so the lead prompt goes in as developer_instructions. The
 // session gets ORCH_LEAD and ORCH_HARNESS so `orch mem` knows who writes.
 import { spawnSync } from "node:child_process";
-import { HARNESSES, type Harness, loadProfile } from "./profile.ts";
-import { leadPrompt } from "./render.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { HARNESSES, type Harness, loadProfile } from "./core/profile.ts";
+import { hookCommand, leadPrompt } from "./install/render.ts";
+
+function codexHookOverride(event: string, handlerEvent: string, matcher?: string): string {
+  const match = matcher === undefined ? "" : `matcher = ${JSON.stringify(matcher)}, `;
+  const group = `[{ ${match}hooks = [{ type = "command", command = ${JSON.stringify(hookCommand(handlerEvent, "codex"))}, timeout = 10 }] }]`;
+  return `hooks.${event}=${group}`;
+}
 
 // The model the operator asked for: a --model/-m in the extra args wins over
 // the profile.
@@ -26,6 +34,10 @@ export function leadArgv(h: Harness, profileName?: string, extra: string[] = [])
     const model = requestedModel(extra, choice.model);
     const text = model ? `${leadPrompt()}\n\nYour harness reports this model: ${model}.` : leadPrompt();
     const out = ["codex", "-c", `developer_instructions=${JSON.stringify(text)}`];
+    out.push("-c", codexHookOverride("PreToolUse", "pre-bash", "Bash"));
+    out.push("-c", codexHookOverride("PostToolUse", "post-edit", "Edit|Write"));
+    out.push("-c", codexHookOverride("UserPromptSubmit", "prompt-submit"));
+    out.push("-c", codexHookOverride("Stop", "stop"));
     if (choice.model && !requestedModel(extra)) out.push("--model", choice.model);
     if (choice.effort) out.push("-c", `model_reasoning_effort="${choice.effort}"`);
     // yolo: no approval prompt and no sandbox, like the Claude lead's
@@ -37,10 +49,16 @@ export function leadArgv(h: Harness, profileName?: string, extra: string[] = [])
   }
   const out = [h, "--agent", "lead"];
   if (h === "claude") {
+    out.push("--settings", join(process.env.HOME ?? homedir(), ".claude", "orch", "lead-settings.json"));
     if (choice.model) out.push("--model", choice.model);
     if (choice.effort) out.push("--effort", choice.effort);
     const asked = extra.some((a) => a.startsWith("--permission-mode") || a === "--dangerously-skip-permissions");
     if (choice.permission_mode && !asked) out.push("--permission-mode", choice.permission_mode);
+  }
+  if (h === "grok") {
+    if (choice.model && !requestedModel(extra)) out.push("--model", choice.model);
+    const effortAsked = extra.some((a) => ["--reasoning-effort", "--effort"].includes(a.split("=")[0]));
+    if (choice.effort && !effortAsked) out.push("--reasoning-effort", choice.effort);
   }
   return out;
 }

@@ -15,9 +15,9 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { doctorChecks } from "./doctor.ts";
-import { laneRun } from "./lane.ts";
-import { HARNESSES, type Harness, loadProfile } from "./profile.ts";
+import { doctorChecks } from "../install/doctor.ts";
+import { laneRun } from "../lane.ts";
+import { HARNESSES, type Harness, loadProfile } from "../core/profile.ts";
 
 type Row = { worker: Harness; job: string; home: string; network: string; nested: string; usage: string };
 

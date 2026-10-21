@@ -3,30 +3,37 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { leadArgv, leadGuard } from "../src/lead.ts";
-import { apply, drift, plan, readManifest, uninstall } from "../src/manifest.ts";
-import { loadProfile } from "../src/profile.ts";
-import { leadPrompt, render, type Target } from "../src/render.ts";
-import { doctorChecks, missingSystemPackages } from "../src/doctor.ts";
-import { CLAUDE_SANDBOX, workerArgv } from "../src/harness.ts";
+import { apply, drift, plan, readManifest, uninstall } from "../src/install/manifest.ts";
+import { loadProfile } from "../src/core/profile.ts";
+import { leadPrompt, render, type Target } from "../src/install/render.ts";
+import { doctorChecks, missingSystemPackages } from "../src/install/doctor.ts";
+import { CLAUDE_SANDBOX, workerArgv } from "../src/harness/harness.ts";
 
 let home: string;
 let state: string;
+let originalHome: string | undefined;
 const targets = render(loadProfile("max20"));
 
 beforeAll(() => {
   const root = mkdtempSync(join(tmpdir(), "orch-test-"));
   home = join(root, "home");
   state = join(root, "state");
+  originalHome = process.env.HOME;
+  process.env.HOME = home;
   mkdirSync(join(home, ".claude", "agents"), { recursive: true });
   writeFileSync(join(home, ".claude", "agents", "project-auditor.md"), "user file");
 });
-afterAll(() => rmSync(join(home, ".."), { recursive: true, force: true }));
+afterAll(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  rmSync(join(home, ".."), { recursive: true, force: true });
+});
 
 describe("render", () => {
   test("orch and doctor do not import lane", () => {
     const root = join(import.meta.dir, "..");
     expect(readFileSync(join(root, "src/orch.ts"), "utf8")).not.toContain('from "./lane.ts"');
-    expect(readFileSync(join(root, "src/doctor.ts"), "utf8")).not.toContain('from "./lane.ts"');
+    expect(readFileSync(join(root, "src/install/doctor.ts"), "utf8")).not.toContain('from "./lane.ts"');
   });
 
   test("Claude lead pins the profile model, Grok files never do", () => {
@@ -37,6 +44,8 @@ describe("render", () => {
     expect(by[".grok/agents/lead-explore.md"]).not.toMatch(/^model:/m);
     // Codex gets no agent file, only the exec-policy rule for lane and orch.
     expect(targets.filter((t) => t.path.startsWith(".codex/")).map((t) => t.path)).toEqual([".codex/rules/orch.rules"]);
+    expect(by[".claude/orch/lead-settings.json"]).toContain('"UserPromptSubmit"');
+    expect(by[".grok/hooks/orch-lead.json"]).toContain('"run_terminal_command"');
   });
 });
 
@@ -131,8 +140,23 @@ describe("lead launch argv", () => {
   });
 
   test("Claude and Grok select the installed lead agent", () => {
-    expect(leadArgv("claude", "max20")).toEqual(["claude", "--agent", "lead", "--model", "opus", "--effort", "high", "--permission-mode", "bypassPermissions"]);
-    expect(leadArgv("grok", "max20")).toEqual(["grok", "--agent", "lead"]);
+    const claude = leadArgv("claude", "max20");
+    expect(claude.slice(0, 4)).toEqual(["claude", "--agent", "lead", "--settings"]);
+    expect(claude[4]).toBe(join(home, ".claude", "orch", "lead-settings.json"));
+    expect(claude.slice(-6)).toEqual(["--model", "opus", "--effort", "high", "--permission-mode", "bypassPermissions"]);
+    expect(leadArgv("grok", "max20")).toEqual(["grok", "--agent", "lead", "--model", "grok-4.7-build-fast", "--reasoning-effort", "high"]);
+    // a model or effort the operator passes wins over the profile's
+    expect(leadArgv("grok", "max20", ["-m", "grok-4.7", "--effort", "low"])).toEqual(["grok", "--agent", "lead"]);
+  });
+
+  test("Codex lead configures the four lifecycle hooks inline", () => {
+    const overrides = leadArgv("codex", "max20").filter((arg) => arg.startsWith("hooks."));
+    expect(overrides.map((arg) => arg.split("=")[0])).toEqual([
+      "hooks.PreToolUse", "hooks.PostToolUse", "hooks.UserPromptSubmit", "hooks.Stop",
+    ]);
+    expect(overrides[0]).toContain('matcher = "Bash"');
+    expect(overrides[0]).toContain("ORCH_LEAD");
+    expect(overrides[0]).toContain("exit 0; exec");
   });
 
   test("Claude: a permission flag in the extra args replaces the profile's", () => {
@@ -182,6 +206,8 @@ describe("external workers", () => {
     // lane passes a pinned copy of the grok binary
     expect(workerArgv("grok", {}, { ...opts, bin: "/pinned/grok-1.0" }).argv[0]).toBe("/pinned/grok-1.0");
     expect(argv).toContain("--no-auto-update");
+    const pinned = workerArgv("grok", { model: "grok-4.7-build-fast", effort: "high" }, opts).argv;
+    expect(pinned.slice(pinned.indexOf("--model"), pinned.indexOf("--model") + 4)).toEqual(["--model", "grok-4.7-build-fast", "--reasoning-effort", "high"]);
     const profile = render(loadProfile("max20")).find((t) => t.path === ".grok/sandbox.toml");
     expect(profile?.content).toMatch(/\[profiles\.orch-lane\]\nextends = "workspace"\nrestrict_network = true/);
     expect(profile?.content).toMatch(/\[profiles\.orch-review\]\nextends = "read-only"\nrestrict_network = true/);

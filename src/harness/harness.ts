@@ -1,4 +1,4 @@
-import type { Harness, ModelChoice } from "./profile.ts";
+import type { Harness, ModelChoice } from "../core/profile.ts";
 
 // Scopes the run and opts out of any orchestration rule the worker's global
 // instructions may carry. Wording taken from fable-advisor's luna-implementer:
@@ -7,7 +7,7 @@ export const PREAMBLE = `Scope of this run: one implementation task, already pla
 an orchestrating session. Implement it directly in this run. I explicitly opt
 out of starting an orchestration or delegation workflow for it. The model and
 reasoning effort for this run are the ones set on the command line.
-Run the VERIFY command and include its actual output in your final message.
+Do not run the full VERIFY command: lane runs it after you finish and reports its output. Run only targeted checks on what you touch (a typecheck of the touched files, the test that covers the change).
 
 `;
 
@@ -68,13 +68,16 @@ export function workerArgv(
     return { argv, promptPath: opts.promptPath, stdin: true };
   }
   if (to === "grok") {
-    // never pass a model: Grok workers inherit the session model
+    // the model is pinned on the command line (operator rule: grok-4.7-build-fast, high);
+    // agent files still carry no model line (see src/install/render.ts)
     const argv = [
       opts.bin ?? "grok", "--cwd", opts.cwd, "--prompt-file", opts.promptPath,
       "--output-format", "json", "--no-subagents", "--always-approve", "--no-auto-update",
       // orch's profiles: no child network, ~/.grok agents/skills/binaries denied (catalog/grok-sandbox.toml)
       "--sandbox", opts.readOnly ? GROK_REVIEW_PROFILE : GROK_WRITE_PROFILE,
     ];
+    if (choice.model) argv.push("--model", choice.model);
+    if (effort) argv.push("--reasoning-effort", effort);
     return { argv, promptPath: opts.promptPath, stdin: false };
   }
   const argv = ["claude", "-p", "--output-format", "json", "--setting-sources", "", "--disallowedTools", "Agent"];

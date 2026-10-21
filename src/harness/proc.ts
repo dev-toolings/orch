@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { openSync, closeSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readdirSync } from "node:fs";
 
 export interface RunResult {
   code: number | null;
   timedOut: boolean;
   spawnError?: string;
+  peakRssMb?: number;
 }
 
 // Environment passed to workers and verify commands: an allowlist, so tokens
@@ -28,6 +29,7 @@ export function runLogged(
   return new Promise((resolve) => {
     const out = openSync(opts.logPath, "a");
     const stdin = opts.stdinPath ? openSync(opts.stdinPath, "r") : "ignore";
+    const canSampleRss = process.platform === "linux" && existsSync("/proc");
     const child = spawn(argv[0], argv.slice(1), {
       cwd: opts.cwd,
       env: opts.env,
@@ -35,6 +37,26 @@ export function runLogged(
       stdio: [stdin, out, out],
     });
     let timedOut = false;
+    let peakRssMb: number | undefined;
+    let sampleTimer: ReturnType<typeof setInterval> | undefined;
+    const sampleRss = () => {
+      if (!canSampleRss || !child.pid) return;
+      let totalKb = 0;
+      try {
+        for (const entry of readdirSync("/proc")) {
+          if (!/^\d+$/.test(entry)) continue;
+          const proc = `/proc/${entry}`;
+          try {
+            const stat = readFileSync(`${proc}/stat`, "utf8");
+            const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+            if (Number(fields[2]) !== child.pid) continue;
+            const status = readFileSync(`${proc}/status`, "utf8");
+            totalKb += Number(status.match(/^VmRSS:\s+(\d+) kB$/m)?.[1] ?? 0);
+          } catch {}
+        }
+      } catch {}
+      if (totalKb > 0) peakRssMb = Math.max(peakRssMb ?? 0, Math.ceil(totalKb / 1024));
+    };
     const kill = (sig: NodeJS.Signals) => {
       try {
         process.kill(-child.pid!, sig);
@@ -47,13 +69,19 @@ export function runLogged(
     }, opts.timeoutMs);
     const done = (r: RunResult) => {
       clearTimeout(timer);
+      if (sampleTimer) clearInterval(sampleTimer);
       closeSync(out);
       if (typeof stdin === "number") closeSync(stdin);
-      resolve(r);
+      resolve({ ...r, peakRssMb });
     };
+    if (canSampleRss) child.once("spawn", () => {
+      sampleRss();
+      sampleTimer = setInterval(sampleRss, 2000);
+    });
     child.on("error", (e) => done({ code: 127, timedOut, spawnError: e.message }));
     child.on("exit", (code, signal) => {
       // reap any descendant left in the group
+      sampleRss();
       kill("SIGKILL");
       done({ code: code ?? (signal ? 128 : null), timedOut });
     });

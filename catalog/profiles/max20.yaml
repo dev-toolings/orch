@@ -3,11 +3,13 @@ name: max20
 lead:
   claude: { model: opus, effort: high, permission_mode: bypassPermissions }
   codex: { model: gpt-6-astra, effort: medium, permission_mode: yolo }
-  grok: { model: null }
+  grok: { model: grok-4.7-build-fast, effort: high }
 lanes:
-  codex: { model: gpt-5.6-luna, effort: xhigh }
-  grok: { model: null }
+  codex: { model: gpt-6-luna, effort: xhigh }
+  grok: { model: grok-4.7-build-fast, effort: high }
   claude: { model: sonnet, effort: high }
+explore:
+  claude: sonnet
 review:
   # cross-family reviewer chosen from the lead's harness; `high` is used by
   # `lane review --risk high` (data migration, security path, public API)
@@ -15,7 +17,11 @@ review:
   codex: { to: claude, model: opus, effort: high }
   grok: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium } }
 limits:
-  max_concurrent: 5
+  max_concurrent_ceiling: 8
+  verify_concurrent: 2
+  worker_gib: 0.5
+  verify_gib: 1.5
+  reserve_gib: 4
   max_depth: 1
   report_max_bytes: 4096
   timeout_seconds: 1200

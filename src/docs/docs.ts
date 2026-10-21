@@ -5,8 +5,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { git as runGit } from "./git.ts";
-import { ROOT } from "./profile.ts";
+import { git as runGit } from "../core/git.ts";
+import { ROOT } from "../core/profile.ts";
 
 export interface Source {
   id: string;

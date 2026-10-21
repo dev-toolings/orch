@@ -1,14 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { laneGc, laneReview, laneRun, listLanes, setupCommand } from "../src/lane.ts";
-import { bound } from "../src/output.ts";
-import { laneReport } from "../src/report.ts";
-import { SNAPSHOT_LIMITS, statusPaths } from "../src/worktree.ts";
-import { loadProfile, type Profile } from "../src/profile.ts";
-import { releaseSlot, reserveSlot } from "../src/slots.ts";
+import { laneAsk, laneGc, laneReview, laneRun, listLanes, setupCommand } from "../src/lane.ts";
+import { bound } from "../src/core/output.ts";
+import { laneReport } from "../src/lanes/report.ts";
+import { SNAPSHOT_LIMITS, statusPaths } from "../src/lanes/worktree.ts";
+import { loadProfile, type Profile } from "../src/core/profile.ts";
+import { releaseSlot, reserveSlot } from "../src/lanes/slots.ts";
+import { laneBudget } from "../src/lanes/budget.ts";
 
 let root: string;
 let repo: string;
@@ -19,7 +20,8 @@ const savedState = process.env.ORCH_STATE;
 // Hermetic: these tests may run inside a lane VERIFY, where ORCH_LANE=1 is
 // inherited and would trip the depth guard of every laneRun below.
 const savedLane = process.env.ORCH_LANE;
-const profile: Profile = { ...loadProfile("max20"), limits: { max_concurrent: 5, max_depth: 1, report_max_bytes: 4096, timeout_seconds: 30 } };
+const loadedProfile = loadProfile("max20");
+const profile: Profile = { ...loadedProfile, limits: { ...loadedProfile.limits, max_concurrent_ceiling: 5, report_max_bytes: 4096, timeout_seconds: 30 } };
 
 const SPEC = (verify: string) => `OBJECTIVE: create out.txt
 FILES: out.txt
@@ -77,7 +79,7 @@ function fakeOrca(mode = "up") {
   writeFileSync(join(root, "orca-mode"), mode);
   const script = `#!${process.execPath}
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, writeFileSync, openSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync, openSync } from 'node:fs';
 const root = ${JSON.stringify(root)};
 const args = process.argv.slice(2), verb = args.slice(0, 2).join(' ');
 const flag = k => args[args.indexOf(k) + 1];
@@ -91,8 +93,28 @@ const db = root + '/orca-resources';
 const resources = existsSync(db) ? JSON.parse(readFileSync(db, 'utf8')) : {};
 const persist = () => writeFileSync(db, JSON.stringify(resources));
 if (verb === 'worktree current') ok({worktree:{id:'fake::' + process.cwd(),repoId:'fake',path:process.cwd(),hostId:mode === 'remote' ? 'ssh:remote' : 'local'}});
+if (verb === 'repo show') ok({repo:{id:'fake',kind:mode === 'folder' ? 'folder' : 'git'}});
 if (verb === 'worktree create') {
-  const name = flag('--name'), path = root + '/orca-' + name;
+  const name = flag('--name');
+  let path = root + '/orca-' + name;
+  if (['repo-path', 'repo-alias', 'repo-subdir', 'standalone', 'unrelated-linked'].includes(mode)) {
+    if (mode === 'repo-path') path = process.cwd();
+    else if (mode === 'repo-alias') symlinkSync(process.cwd(), path);
+    else if (mode === 'repo-subdir') { path = process.cwd() + '/.git'; }
+    else {
+      mkdirSync(path);
+      spawnSync('git', ['init', '-q', path]);
+      spawnSync('git', ['-C', path, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+      if (mode === 'unrelated-linked') {
+        spawnSync('git', ['-C', path, 'worktree', 'add', '-q', '-b', 'child', path + '-child']);
+        path += '-child';
+      }
+    }
+    const w = {id:'fake::' + path,path,branch:spawnSync('git', ['branch', '--show-current'], {encoding:'utf8'}).stdout.trim()};
+    resources['id:' + w.id] = {worktree:w};
+    resources['name:' + name] = resources['id:' + w.id]; persist();
+    ok({worktree:w});
+  }
   const r = spawnSync('git', ['worktree','add','-q','-b','fake/' + name,path,flag('--base-branch')]);
   if (r.status !== 0) fail('create_failed');
   const w = {id:'fake::' + path,path,branch:'refs/heads/fake/' + name};
@@ -153,17 +175,18 @@ describe("Orca lane channel", () => {
       expect(result.report).toContain("USAGE: total 321");
       expect(Buffer.byteLength(result.report)).toBeLessThanOrEqual(4096);
       expect(result.report).toContain("snapshot of dirty tree");
-      const dumped = readFileSync(join(state!.worktree, "env.txt"), "utf8");
+      // The finished lane is cut at once: its Orca worktree and terminals are
+      // gone, its result lives on the branch until gc.
+      expect(existsSync(state!.worktree)).toBe(false);
+      expect(sh(repo, `git rev-parse --verify ${state!.branch}`).status).toBe(0);
+      const dumped = sh(repo, `git show ${state!.branch}:env.txt`).stdout;
       expect(dumped).toContain("ORCH_LANE=1");
       expect(dumped).not.toContain("caller-secret");
       expect(dumped).not.toContain("pty-secret");
-      await Bun.sleep(350);
       const output = readFileSync(join(root, "observer-output"), "utf8");
       expect(output).toContain('"state":"working"');
-      expect(output).toContain('"state":"done"');
-      expect(output).toContain("LANE REPORT");
       expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
-      expect(existsSync(state!.worktree)).toBe(false);
+      expect(sh(repo, `git rev-parse --verify ${state!.branch}`).status).not.toBe(0);
       const calls: string[][] = readFileSync(join(root, "orca-calls"), "utf8").trim().split("\n").map(l => JSON.parse(l));
       const create = calls.find(a => a[0] === "worktree" && a[1] === "create")!;
       expect(create).toContain("--parent-worktree");
@@ -211,6 +234,82 @@ describe("Orca lane channel", () => {
     }
   });
 
+  test("folder projects fall back to headless before any Orca mutation", async () => {
+    fakeOrca("folder");
+    const before = readFileSync(join(root, "orca-calls"), "utf8");
+    fake("codex", "true");
+    try {
+      const { state, report } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile, channel: "orca" });
+      expect(state?.status).toBe("noop");
+      expect(state?.channel).toBe("headless");
+      expect(state?.orca).toBeUndefined();
+      expect(state?.worktree).not.toBe(repo);
+      expect(report).toContain("CHANNEL: Orca repo kind folder is not git; worker remains headless");
+      const calls = readFileSync(join(root, "orca-calls"), "utf8").slice(before.length).trim().split("\n").map(l => JSON.parse(l).slice(0, 2));
+      expect(calls).toEqual([["worktree", "current"], ["repo", "show"]]);
+      expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
+
+  test.each(["repo-path", "repo-alias", "repo-subdir", "standalone", "unrelated-linked"])("create refuses %s before renaming or starting a worker", async (mode) => {
+    fakeOrca(mode);
+    const before = readFileSync(join(root, "orca-calls"), "utf8");
+    const branch = sh(repo, "git branch --show-current").stdout;
+    const marker = join(root, `unsafe-${mode}-worker`);
+    fake("codex", `touch ${marker}`);
+    let failed: ReturnType<typeof listLanes>[number] | undefined;
+    try {
+      const { state, report } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile, channel: "orca" });
+      expect(state).toBeUndefined();
+      expect(report).toContain("STATUS: unavailable");
+      expect(report).toContain(mode === "repo-path" || mode === "repo-alias"
+        ? "Orca worktree resolves to the caller repo" : "Orca returned no distinct linked git worktree");
+      expect(sh(repo, "git branch --show-current").stdout).toBe(branch);
+      expect(existsSync(marker)).toBe(false);
+      failed = listLanes().find(s => report.includes(`ID: ${s.id}\n`));
+      expect(failed).toBeDefined();
+      // A lost create reply is recovered by name during gc. That recovery
+      // must not turn a rejected caller checkout into a removal target.
+      if (mode === "repo-path" || mode === "repo-alias") {
+        expect(laneGc(failed!.id)).toContain(`kept ${failed!.id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
+      }
+      const calls = readFileSync(join(root, "orca-calls"), "utf8").slice(before.length);
+      expect(calls).toContain('["worktree","create"');
+      expect(calls).not.toContain('["worktree","rm"');
+      expect(calls).not.toContain('["terminal"');
+    } finally {
+      if (failed) rmSync(join(process.env.ORCH_STATE!, "lanes", failed.id), { recursive: true, force: true });
+      rmSync(join(bin, "orca"), { force: true });
+    }
+  });
+
+  test("gc retains a lane pointing at its repo, including a symlink alias, without Orca removal", () => {
+    fakeOrca();
+    const before = readFileSync(join(root, "orca-calls"), "utf8");
+    const branch = sh(repo, "git branch --show-current").stdout.trim();
+    const id = "unsafe-caller-checkout";
+    const dir = join(process.env.ORCH_STATE!, "lanes", id);
+    const alias = join(root, "caller-repo-alias");
+    symlinkSync(repo, alias);
+    mkdirSync(dir, { recursive: true });
+    try {
+      for (const worktree of [repo, alias]) {
+        writeFileSync(join(dir, "state.json"), JSON.stringify({
+          id, to: "codex", repo, base: "HEAD", branch, worktree, status: "unavailable", changed: false,
+          usage: {}, started: "", ended: "", channel: "orca", orca: { selector: `id:fake::${repo}` },
+        }));
+        expect(laneGc(id)).toContain(`kept ${id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
+        expect(existsSync(join(dir, "state.json"))).toBe(true);
+        expect(existsSync(repo)).toBe(true);
+        expect(sh(repo, "git branch --show-current").stdout.trim()).toBe(branch);
+      }
+      expect(readFileSync(join(root, "orca-calls"), "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(join(bin, "orca"), { force: true });
+    }
+  });
+
   test.each(["lost-create", "no-terminal"])("%s runs the worker once and retains Orca gc ownership", async (mode) => {
     fakeOrca(mode);
     fake("codex", "echo once >> out.txt");
@@ -219,17 +318,18 @@ describe("Orca lane channel", () => {
       expect(state?.status).toBe("complete");
       expect(state?.channel).toBe(mode === "no-terminal" ? "headless" : "orca");
       expect(state?.orca).toBeDefined();
-      expect(readFileSync(join(state!.worktree, "out.txt"), "utf8")).toBe("once\n");
+      expect(sh(repo, `git show ${state!.branch}:out.txt`).stdout).toBe("once\n");
+      expect(existsSync(state!.worktree)).toBe(false);
       expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
     } finally { rmSync(join(bin, "orca"), { force: true }); }
   });
 
-  test.each(["close-fails", "rm-fails", "rm-pending"])("gc retains ledger and branch when %s", async (mode) => {
-    fakeOrca();
+  test.each(["close-fails", "rm-fails", "rm-pending"])("run and gc retain ledger and branch when %s", async (mode) => {
+    fakeOrca(mode);
     fake("codex", "true");
     try {
       const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile });
-      fakeOrca(mode);
+      expect(existsSync(state!.worktree)).toBe(true);
       expect(laneGc(state!.id).some(s => s.startsWith(`kept ${state!.id} (Orca`))).toBe(true);
       expect(existsSync(state!.worktree)).toBe(true);
       expect(listLanes().some(s => s.id === state!.id)).toBe(true);
@@ -259,8 +359,8 @@ describe("Orca lane channel", () => {
     fakeOrca();
     fake("codex", "true");
     try {
-      const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile });
       fakeOrca("rm-pending");
+      const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile });
       expect(laneGc(state!.id).some(s => s.includes("removal pending"))).toBe(true);
       // The fake server completes its previously accepted removal later.
       spawnSync("git", ["worktree", "remove", "--force", state!.worktree], { cwd: repo });
@@ -292,12 +392,17 @@ describe("Orca lane channel", () => {
 
 describe("lane run classes", () => {
   test("complete: change committed on the lane branch, usage parsed", async () => {
-    fake("codex", 'echo hi > out.txt; echo "tokens used"; echo "1 234"');
-    const { report, state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo, profile });
+    fake("codex", 'sleep 0.2; echo hi > out.txt; echo "tokens used"; echo "1 234"');
+    const { report, state } = await laneRun({ to: "codex", specPath: spec("sleep 0.2; test -f out.txt"), repo, profile });
     expect(state?.status).toBe("complete");
     expect(report).toContain("USAGE: total 1234");
+    expect(state?.peakRssMb?.worker).toBeGreaterThan(0);
+    expect(state?.peakRssMb?.verify).toBeGreaterThan(0);
+    expect(report).toMatch(/^PEAK RSS: worker \d+ MB, verify \d+ MB$/m);
     expect(report).toContain(`INTEGRATE: git merge --squash ${state!.branch}`);
     expect(sh(repo, `git show --stat ${state!.branch}`).stdout).toContain("out.txt");
+    // Finished: the worktree is cut at once, the branch carries the result.
+    expect(existsSync(state!.worktree)).toBe(false);
   });
 
   test("noop: nothing changed and VERIFY passes", async () => {
@@ -359,8 +464,8 @@ describe("lane run classes", () => {
     const { report, state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: dirty, profile });
     expect(probe()).toBe(before);
     expect(state?.status).toBe("complete");
-    expect(readFileSync(join(state!.worktree, "shared.txt"), "utf8")).toBe("v2\n");
-    expect(readFileSync(join(state!.worktree, "component.txt"), "utf8")).toBe("new\n");
+    expect(sh(dirty, `git show ${state!.branch}:shared.txt`).stdout).toBe("v2\n");
+    expect(sh(dirty, `git show ${state!.branch}:component.txt`).stdout).toBe("new\n");
     const head = sh(dirty, "git rev-parse --short=12 HEAD").stdout.trim();
     expect(report).toContain(`BASE: ${state!.base} (snapshot of dirty tree over HEAD ${head})`);
     expect(sh(dirty, `git diff --name-only ${state!.base} ${state!.branch}`).stdout.trim()).toBe("out.txt");
@@ -373,6 +478,44 @@ describe("lane run classes", () => {
     const { report, state } = await laneRun({ to: "codex", specPath: p, repo, profile });
     expect(state).toBeUndefined();
     expect(report).toContain("spec missing FILES");
+  });
+
+  test("third lane reservation is refused at budget 2 and names the budget", async () => {
+    const marker = join(root, "lane-launched");
+    fake("codex", `touch ${marker}`);
+    const limits = { ...profile.limits, max_concurrent_ceiling: 2 };
+    const budgetProfile = { ...profile, limits };
+    const machine = { cores: 4, memAvailableGib: 23 };
+    const sd = process.env.ORCH_STATE!;
+    const held = [reserveSlot(sd, 2, "held-1"), reserveSlot(sd, 2, "held-2")];
+    try {
+      expect(held).toEqual([0, 1]);
+      const { report } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile: budgetProfile, machine });
+      expect(report).toContain("REASON: lane budget 2 (limited by cpu) already running");
+    } finally {
+      for (const slot of held) if (slot !== null) releaseSlot(sd, slot);
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("VERIFY commands from overlapping lanes run one after another", async () => {
+    const arrivals = join(root, `verify-arrivals-${Math.random().toString(36).slice(2)}`);
+    const times = join(root, `verify-times-${Math.random().toString(36).slice(2)}`);
+    fake("codex", `echo $$ >> ${JSON.stringify(arrivals)}; while [ "$(wc -l < ${JSON.stringify(arrivals)})" -lt 2 ]; do sleep 0.02; done; echo x > out.txt`);
+    const verify = `printf 'start %s\\n' "$(date +%s%N)" >> ${JSON.stringify(times)}; sleep 0.35; printf 'end %s\\n' "$(date +%s%N)" >> ${JSON.stringify(times)}`;
+    const serialProfile = { ...profile, limits: { ...profile.limits, verify_concurrent: 1 } };
+    const machine = { cores: 4, memAvailableGib: 23 };
+    const results = await Promise.all([
+      laneRun({ to: "codex", specPath: spec(verify), repo, profile: serialProfile, machine }),
+      laneRun({ to: "codex", specPath: spec(verify), repo, profile: serialProfile, machine }),
+    ]);
+    expect(results.every(result => result.state?.status === "complete")).toBe(true);
+    const events = readFileSync(times, "utf8").trim().split("\n").map(line => {
+      const [kind, stamp] = line.split(" ");
+      return { kind, stamp: Number(stamp) };
+    });
+    expect(events.map(event => event.kind)).toEqual(["start", "end", "start", "end"]);
+    expect(events[1].stamp).toBeLessThanOrEqual(events[2].stamp);
   });
 });
 
@@ -401,6 +544,16 @@ describe("report and slots", () => {
     expect(reserveSlot(sd, 2, "d")).toBe(a);
   });
 
+  test("VERIFY slots use an independent pool", () => {
+    const sd = join(root, "verify-slots-test");
+    const lane = reserveSlot(sd, 1, "lane");
+    const verify = reserveSlot(sd, 1, "verify", "verify-slots");
+    expect(lane).toBe(0);
+    expect(verify).toBe(0);
+    releaseSlot(sd, lane!);
+    releaseSlot(sd, verify!, "verify-slots");
+  });
+
   test("a slot held by a dead process is reclaimed", () => {
     const sd = join(root, "slots-stale");
     mkdirSync(join(sd, "slots", "0"), { recursive: true });
@@ -420,11 +573,40 @@ describe("gc", () => {
     expect(laneGc()).toContain(`removed ${state!.id}`);
     expect(existsSync(state!.worktree)).toBe(false);
   });
+
+  test("removes an applied lane with unrelated working tree changes and keeps an unapplied lane", async () => {
+    const r = join(root, "gc-applied");
+    mkdirSync(r);
+    sh(r, "git init -q && echo base > tracked.txt && git add tracked.txt && git -c user.email=t@t -c user.name=t commit -q -m init");
+    writeFileSync(join(r, "tracked.txt"), "dirty base\n");
+
+    fake("codex", "echo integrated > applied.txt");
+    const integrated = await laneRun({ to: "codex", specPath: spec("test -f applied.txt"), repo: r, profile });
+    expect(integrated.state?.status).toBe("complete");
+    const patchCommand = `git diff --binary --no-ext-diff --no-textconv ${integrated.state!.base} ${integrated.state!.branch} | git apply`;
+    expect(integrated.report).toContain(`INTEGRATE: ${patchCommand} && lane gc --drop ${integrated.state!.id}`);
+
+    fake("codex", "echo pending > pending.txt");
+    const pending = await laneRun({ to: "codex", specPath: spec("test -f pending.txt"), repo: r, profile });
+    expect(pending.state?.status).toBe("complete");
+
+    expect(sh(r, patchCommand).status).toBe(0);
+    writeFileSync(join(r, "unrelated.txt"), "extra change\n");
+    const output = laneGc();
+
+    expect(output).toContain(`removed ${integrated.state!.id} (applied)`);
+    expect(output).toContain(`kept ${pending.state!.id} (complete, not integrated)`);
+    expect(readFileSync(join(r, "applied.txt"), "utf8")).toBe("integrated\n");
+    expect(readFileSync(join(r, "unrelated.txt"), "utf8")).toBe("extra change\n");
+  });
 });
 
 describe("profiles", () => {
-  test("both shipped profiles load and never pin a Grok lane model", () => {
-    for (const name of ["max20", "lean"]) expect(loadProfile(name).lanes.grok.model ?? null).toBeNull();
+  test("both shipped profiles pin Grok to grok-4.7-build-fast at high effort (operator rule)", () => {
+    for (const name of ["max20", "lean"]) {
+      const p = loadProfile(name);
+      for (const choice of [p.lead.grok, p.lanes.grok]) expect(choice).toMatchObject({ model: "grok-4.7-build-fast", effort: "high" });
+    }
   });
 });
 
@@ -513,15 +695,26 @@ describe("lane depth", () => {
     const marker = join(root, "review-slot-launched");
     fake("codex", `touch ${marker}`);
     const held: number[] = [];
+    const budget = laneBudget(profile.limits);
     try {
-      for (let i = 0; i < profile.limits.max_concurrent; i++) held.push(reserveSlot(process.env.ORCH_STATE!, profile.limits.max_concurrent, `held-${i}`)!);
+      for (let i = 0; i < budget.budget; i++) held.push(reserveSlot(process.env.ORCH_STATE!, budget.budget, `held-${i}`)!);
       const report = await laneReview({ from: "codex", to: "codex", base: "HEAD", goal: "review", repo, profile });
-      expect(report).toBe(`LANE REVIEW\nSTATUS: unavailable\nREASON: ${profile.limits.max_concurrent} lanes already running\n`);
+      expect(report).toBe(`LANE REVIEW\nSTATUS: unavailable\nREASON: lane budget ${budget.budget} (limited by ${budget.limitedBy}) already running\n`);
     } finally {
       for (const slot of held) releaseSlot(process.env.ORCH_STATE!, slot);
     }
     expect(existsSync(marker)).toBe(false);
   });
+});
+
+test("lane budget CLI prints its integer and breakdown on separate lines", () => {
+  const result = spawnSync(process.execPath, ["src/lane.ts", "budget"], {
+    cwd: join(import.meta.dir, ".."), encoding: "utf8", env: process.env,
+  });
+  expect(result.status).toBe(0);
+  expect(result.stdout.trim().split("\n")).toHaveLength(2);
+  expect(result.stdout.trim().split("\n")[0]).toMatch(/^\d+$/);
+  expect(result.stdout.trim().split("\n")[1]).toMatch(/^cpu -?\d+ ram -?\d+ ceiling \d+ verify \d+$/);
 });
 
 test("review defaults --from to ORCH_HARNESS when it is valid", () => {
@@ -572,8 +765,8 @@ describe("snapshot and setup hardening (review findings)", () => {
     fake("codex", "echo hi > out.txt");
     const { state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
     expect(state?.status).toBe("complete");
-    expect(readFileSync(join(state!.worktree, "ignored", "fixture.txt"), "utf8")).toBe("forced\n");
-    expect(readFileSync(join(state!.worktree, "new.txt"), "utf8")).toBe("untracked\n");
+    expect(sh(r, `git show ${state!.branch}:ignored/fixture.txt`).stdout).toBe("forced\n");
+    expect(sh(r, `git show ${state!.branch}:new.txt`).stdout).toBe("untracked\n");
     expect(readFileSync(join(r, ".git", "index")).equals(indexBefore)).toBe(true);
   });
 
@@ -595,7 +788,7 @@ describe("snapshot and setup hardening (review findings)", () => {
     fake("codex", "echo hi > out.txt");
     const { state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
     expect(state?.status).toBe("complete");
-    expect(readFileSync(join(state!.worktree, "a.txt"), "utf8")).toBe("edited under assume-unchanged\n");
+    expect(sh(r, `git show ${state!.branch}:a.txt`).stdout).toBe("edited under assume-unchanged\n");
     expect(sh(r, "git ls-files -v a.txt").stdout.trim()).toBe("h a.txt");
   });
 
@@ -607,7 +800,7 @@ describe("snapshot and setup hardening (review findings)", () => {
     fake("codex", "echo hi > out.txt");
     const { state } = await laneRun({ to: "codex", specPath: spec("test -f out.txt"), repo: r, profile });
     expect(state?.status).toBe("complete");
-    expect(readFileSync(join(state!.worktree, "a.txt"), "utf8")).toBe("edited under both flags\n");
+    expect(sh(r, `git show ${state!.branch}:a.txt`).stdout).toBe("edited under both flags\n");
   });
 
   test("hidden edits count toward the snapshot budget next to visible ones", async () => {
@@ -629,6 +822,8 @@ describe("snapshot and setup hardening (review findings)", () => {
     fake("codex", "true");
     const { state } = await laneRun({ to: "codex", specPath: spec("true"), repo: r, profile });
     expect(state?.status).toBe("noop");
+    // The run cut its clean worktree; restore one that holds unsaved work.
+    expect(sh(r, `git worktree add -q ${state!.worktree} ${state!.branch}`).status).toBe(0);
     sh(r, "git config status.showUntrackedFiles no");
     writeFileSync(join(state!.worktree, "work.txt"), "unsaved work\n");
     expect(laneGc()).toContain(`kept ${state!.id} (dirty worktree)`);
@@ -756,4 +951,18 @@ describe("grok profile guard", () => {
       process.env.HOME = savedHome;
     }
   });
+});
+
+test("ask sends the question with stdin closed to the risk-chosen reviewer and reports its answer", async () => {
+  const argvFile = join(root, "ask-argv");
+  const stdinFile = join(root, "ask-stdin");
+  // fake() drains stdin first, so write this codex by hand: it must receive the prompt file
+  // on stdin and see it end (an open, never-closed stdin is what hangs a real codex exec)
+  writeFileSync(join(bin, "codex"), `#!/bin/sh\necho "$@" > ${argvFile}\ncat > ${stdinFile}\nprev=""; for a in "$@"; do [ "$prev" = "-o" ] && echo "chef mode: no" > "$a"; prev="$a"; done\n`);
+  chmodSync(join(bin, "codex"), 0o755);
+  const report = await laneAsk({ from: "claude", question: "Should the lead lose Bash?", repo, profile, risk: "high" });
+  expect(report).toStartWith("ASK REPORT\nREVIEWER: codex · gpt-6.1-sol");
+  expect(report).toContain("chef mode: no");
+  expect(readFileSync(stdinFile, "utf8")).toContain("Should the lead lose Bash?");
+  expect(readFileSync(argvFile, "utf8")).toContain("read-only");
 });

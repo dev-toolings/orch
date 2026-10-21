@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addNote, forgetNote, type Caller, listNotes, recentNotes, searchNotes, showNote, supersedeNote } from "../src/mem.ts";
+import { addNote, forgetNote, type Caller, listNotes, recentNotes, searchNotes, showNote, supersedeNote } from "../src/mem/mem.ts";
+import { similar } from "../src/mem/similar.ts";
 
 let state: string;
 let repo: string;
@@ -106,6 +107,9 @@ describe("mem", () => {
       expect(recentNotes(plain, { state: localState, cwd: localRepo })).toHaveLength(1);
       expect(searchNotes("decision", plain, { state: localState, cwd: localRepo, all: true }).map((note) => note.id)).toEqual(expect.arrayContaining([old.id, next.id]));
       expect(recentNotes(plain, { state: localState, cwd: localRepo, all: true })).toHaveLength(2);
+      // a correction without tags keeps the tags of the note it replaces
+      const third = supersedeNote(next.id, { body: "Decision after a second change" }, lead("codex"), { state: localState, cwd: localRepo, now: new Date("2030-01-03T00:00:00Z") });
+      expect(third.tags).toEqual(["updated"]);
     } finally {
       rmSync(localState, { recursive: true, force: true });
     }
@@ -169,5 +173,89 @@ describe("mem", () => {
   test("empty query returns nothing", () => {
     addNote({ body: "Export uses gzip", scope: "project" }, lead("claude"), { state, cwd: repo });
     expect(searchNotes("  ", lead("claude"), { state, cwd: repo })).toEqual([]);
+  });
+});
+
+describe("mem recall", () => {
+  // Notes written by Grok in the mem-bench with the tag rule (2026-10-20), and
+  // the 20 bench questions. Tags carry the words a question uses but the note
+  // lacks: without them F14 ("outil d'accès à la base" vs "ORM, Kysely") is lost.
+  const fixture = join(import.meta.dir, "fixtures", "mem-recall");
+  const questions = JSON.parse(readFileSync(join(fixture, "questions.json"), "utf8")) as { id: string; q: string; a: string }[];
+  const norm = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const missed = (stripTags: boolean): string[] => {
+    const root = mkdtempSync(join(tmpdir(), "orch-mem-recall-"));
+    const localRepo = join(root, "repo");
+    mkdirSync(join(localRepo, ".orch", "mem"), { recursive: true });
+    spawnSync("git", ["-C", localRepo, "init", "-q"]);
+    for (const f of readdirSync(join(fixture, "notes"))) {
+      const text = readFileSync(join(fixture, "notes", f), "utf8");
+      writeFileSync(join(localRepo, ".orch", "mem", f), stripTags ? text.replace(/^tags: .*$/m, "tags: ") : text);
+    }
+    try {
+      return questions
+        .filter((x) => !searchNotes(x.q, plain, { state: join(root, "state"), cwd: localRepo, limit: 3 }).some((n) => norm(n.body).includes(norm(x.a))))
+        .map((x) => x.id);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  test("every bench question finds its note in the top 3, and tags are what make it so", () => {
+    expect(missed(false)).toEqual([]);
+    expect(missed(true)).toContain("F14");
+  });
+});
+
+describe("mem close notes", () => {
+  // The 20 active bench notes (Grok, 2026-10-20) and 60 labeled candidates:
+  // per fact a restatement, a changed value, and a different fact on the same
+  // subject. The detector only lists pairs for the lead to judge, so recall
+  // on the first two classes is the contract; the third is measured, capped.
+  const fixture = join(import.meta.dir, "fixtures");
+  const candidates = JSON.parse(readFileSync(join(fixture, "mem-dedup", "candidates.json"), "utf8")) as { target: string; kind: string; body: string }[];
+
+  test("restatements and changed values list their note; same-subject facts stay capped", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-mem-close-"));
+    const localRepo = join(root, "repo");
+    mkdirSync(join(localRepo, ".orch", "mem"), { recursive: true });
+    spawnSync("git", ["-C", localRepo, "init", "-q"]);
+    for (const f of readdirSync(join(fixture, "mem-recall", "notes"))) {
+      writeFileSync(join(localRepo, ".orch", "mem", f), readFileSync(join(fixture, "mem-recall", "notes", f), "utf8"));
+    }
+    try {
+      const notes = listNotes(plain, { state: join(root, "state"), cwd: localRepo });
+      const flagged = (c: { target: string; body: string }) => similar(c.body, notes, (n) => n.body).slice(0, 3).some((m) => m.item.body.includes(c.target));
+      const missed = (kind: string) => candidates.filter((c) => c.kind === kind && !flagged(c)).map((c) => c.body);
+      expect(missed("duplicate")).toEqual([]);
+      // Known lexical limit: a change named only by a new word (Drizzle).
+      expect(missed("update")).toEqual(["Pour Atlas on autorise désormais Drizzle à la place de Kysely."]);
+      expect(candidates.filter((c) => c.kind === "distinct" && flagged(c)).length).toBeLessThanOrEqual(15);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("orch mem add always saves; orch mem review lists the close pair after the fact", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-mem-cli-"));
+    const localRepo = join(root, "repo");
+    mkdirSync(localRepo);
+    spawnSync("git", ["-C", localRepo, "init", "-q"]);
+    const cli = (...args: string[]) => spawnSync(process.execPath, [join(import.meta.dir, "..", "src", "orch.ts"), "mem", ...args], {
+      cwd: localRepo, encoding: "utf8", env: { PATH: process.env.PATH, HOME: join(root, "home"), ORCH_STATE: join(root, "state") },
+    });
+    try {
+      expect(cli("review").stdout).toContain("no close pair");
+      expect(cli("add", "Le port local de l'API Atlas est 4817.").status).toBe(0);
+      expect(cli("add", "Le port local de l'API Atlas passe à 5100.").status).toBe(0);
+      expect(cli("add", "Les migrations de base se lancent le jeudi.").status).toBe(0);
+      expect(readdirSync(join(localRepo, ".orch", "mem")).length).toBe(3);
+      const review = cli("review").stdout;
+      expect(review).toMatch(/newer \S+-le-port-local-de-l-api-atlas-passe/);
+      expect(review).toMatch(/older \S+-le-port-local-de-l-api-atlas-est-4817/);
+      expect(review).not.toContain("migrations");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

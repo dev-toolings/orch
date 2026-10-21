@@ -9,14 +9,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
-import { doctorChecks, missingSystemPackages, onPath } from "./doctor.ts";
-import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs.ts";
-import { apply, drift, plan, readManifest, uninstall } from "./manifest.ts";
-import { addNote, callerFromEnv, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem.ts";
-import { bound } from "./output.ts";
-import { stateDir } from "./paths.ts";
-import { loadProfile } from "./profile.ts";
-import { render } from "./render.ts";
+import { doctorChecks, missingSystemPackages, onPath } from "./install/doctor.ts";
+import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs/docs.ts";
+import { apply, drift, plan, readManifest, uninstall } from "./install/manifest.ts";
+import { addNote, callerFromEnv, closePairs, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem/mem.ts";
+import { bound } from "./core/output.ts";
+import { stateDir } from "./core/paths.ts";
+import { loadProfile } from "./core/profile.ts";
+import { render } from "./install/render.ts";
+import type { HookEvent } from "./hooks/hook.ts";
 
 const home = () => process.env.ORCH_HOME ?? homedir();
 
@@ -85,6 +86,12 @@ function mem(args: string[]) {
   } else if (sub === "search" || sub === "recent") {
     const notes = sub === "search" ? searchNotes(text, caller, { scope, limit, all: values.all }) : recentNotes(caller, { scope, limit, all: values.all });
     console.log(bound(notes.length ? notes.map(formatLine).join("\n") : "no note", max));
+  } else if (sub === "review") {
+    const pairs = closePairs(caller, { scope, limit });
+    console.log(bound(pairs.length
+      ? `${pairs.map((p) => `${p.score.toFixed(2)}\n  newer ${formatLine(p.newer)}\n  older ${formatLine(p.older)}`).join("\n")}
+same fact or changed value: orch mem forget <outdated id> --reason "..."; different facts: leave both`
+      : "no close pair", max));
   } else if (sub === "show") {
     const n = showNote(text, caller);
     if (!n) throw new Error(`mem: no note ${text}`);
@@ -142,8 +149,26 @@ async function docs(args: string[]) {
   }
 }
 
+async function hook(args: string[]) {
+  try {
+    const [event, ...rest] = args;
+    const { values } = parseArgs({ args: rest, options: { harness: { type: "string" } } });
+    if (!("pre-bash prompt-submit post-edit stop".split(" ") as string[]).includes(event) ||
+      !("claude codex grok".split(" ") as string[]).includes(values.harness ?? "")) return;
+    let input: unknown;
+    try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return; }
+    const { runHook } = await import("./hooks/hook.ts");
+    const output = await runHook(event as HookEvent, values.harness as "claude" | "codex" | "grok", input, process.env);
+    if (output) process.stdout.write(`${output}\n`);
+  } catch {
+    // Hook commands fail open. A malformed event or unavailable state must
+    // never prevent the harness from continuing its normal work.
+  }
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
-if (cmd === "mem") mem(rest);
+if (cmd === "hook") await hook(rest);
+else if (cmd === "mem") mem(rest);
 else if (cmd === "docs") await docs(rest);
 else if (cmd === "install" || cmd === "diff" || cmd === "uninstall") files(cmd, rest);
 else if (cmd === "doctor") {
@@ -152,6 +177,6 @@ else if (cmd === "doctor") {
   if (!ok) process.exitCode = 1;
 }
 else {
-  console.log("usage: orch install [--profile p] [--dry-run] [--no-system-deps] | diff | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget | docs update|status|search | doctor");
+  console.log("usage: orch install [--profile p] [--dry-run] [--no-system-deps] | diff | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
   process.exitCode = 2;
 }

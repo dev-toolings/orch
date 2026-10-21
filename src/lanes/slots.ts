@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const LOCK_TIMEOUT_MS = 5_000;
@@ -68,43 +68,43 @@ function alive(pid: number): boolean {
   }
 }
 
-export function reserveSlot(stateDir: string, max: number, laneId: string): number | null {
-  const dir = join(stateDir, "slots");
+export function reserveSlot(stateDir: string, max: number, laneId: string, pool = "slots"): number | null {
+  const dir = join(stateDir, pool);
   mkdirSync(dir, { recursive: true });
   const lock = takeLock(dir);
   if (!lock) return null;
   try {
-    for (let i = 0; i < max; i++) {
+    // Count every live reservation, not only indices below max: the budget can
+    // shrink between two lanes, and a high slot still held must count against it.
+    const held = (slot: string): boolean => {
+      try {
+        const owner = Number(readFileSync(join(slot, "pid"), "utf8").split(" ")[0]);
+        return !!owner && alive(owner);
+      } catch {
+        return existsSync(slot) && !stale(slot); // between mkdir and the pid write
+      }
+    };
+    const used = readdirSync(dir).filter((e) => /^\d+$/.test(e) && held(join(dir, e))).length;
+    if (used >= max) return null;
+    for (let i = 0; ; i++) {
       const slot = join(dir, String(i));
+      if (held(slot)) continue;
+      rmSync(slot, { recursive: true, force: true });
       try {
         mkdirSync(slot);
       } catch {
-        let owner = 0;
-        let hasPid = false;
-        try {
-          owner = Number(readFileSync(join(slot, "pid"), "utf8").split(" ")[0]);
-          hasPid = true;
-        } catch {}
-        if (owner && alive(owner)) continue;
-        if (!hasPid && !stale(slot)) continue;
-        rmSync(slot, { recursive: true, force: true });
-        try {
-          mkdirSync(slot);
-        } catch {
-          continue;
-        }
+        continue;
       }
       writeFileSync(join(slot, "pid"), `${process.pid} ${laneId}`);
       return i;
     }
-    return null;
   } finally {
     releaseLock(lock);
   }
 }
 
-export function releaseSlot(stateDir: string, slot: number): void {
-  const dir = join(stateDir, "slots");
+export function releaseSlot(stateDir: string, slot: number, pool = "slots"): void {
+  const dir = join(stateDir, pool);
   mkdirSync(dir, { recursive: true });
   const lock = takeLock(dir);
   if (!lock) return;

@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 type Fact = { id: string; say: string; q: string; a: string; fix?: string; old?: string };
-const FACTS: Fact[] = [
+export const FACTS: Fact[] = [
   { id: "F01", say: "Le serveur de staging du projet Atlas s'appelle bivouac-7.", q: "Comment s'appelle le serveur de staging du projet Atlas ?", a: "bivouac-7" },
   { id: "F02", say: "Sur Atlas, les migrations de base ne se lancent que le jeudi.", q: "Quel jour lance-t-on les migrations de base sur Atlas ?", a: "jeudi" },
   { id: "F03", say: "Le port local de l'API Atlas est 4817.", q: "Quel est le port local de l'API Atlas ?", a: "4817" },
@@ -33,15 +33,32 @@ const FACTS: Fact[] = [
   { id: "F20", say: "La clé de chiffrement d'Atlas tourne tous les 21 jours.", fix: "Correction : la clé de chiffrement d'Atlas tourne désormais tous les 14 jours, plus 21.", q: "Tous les combien de jours tourne la clé de chiffrement d'Atlas ?", a: "14", old: "21" },
 ];
 
+// Bench knobs (env):
+// - BENCH_EFFORT=low|medium|high for every harness (default: Claude unset,
+//   Codex low, Grok high);
+// - BENCH_TAGS=0 drops the tag rule (shipped in catalog/lead.md, on by default);
+// - BENCH_CONTROL=0 skips the empty-store arm;
+// - BENCH_FAST=0 measures the slower option: Codex on the default service tier
+//   instead of fast, Grok on grok-4.7 instead of grok-4.7-build-fast (Claude
+//   haiku has no fast mode).
+// Models and tiers are always passed explicitly, so a run never depends on the
+// operator's own config. Each run records seconds and tokens (input, cached,
+// output, reasoning); scripts/mem-bench-report.ts compares cell folders.
+const EFFORT = process.env.BENCH_EFFORT;
+const FAST = process.env.BENCH_FAST !== "0";
+const MODELS: Record<string, string> = { claude: "haiku", codex: "gpt-6-luna", grok: FAST ? "grok-4.7-build-fast" : "grok-4.7" };
+const EFFORTS: Record<string, string> = { claude: EFFORT ?? "default", codex: EFFORT ?? "low", grok: EFFORT ?? "high" };
+const TAGS_RULE = `\n- When you save a note, add \`--tags\` with 3 to 6 words in the operator's language that someone could use later to ask about it but that are not in the note (category, synonyms), for example \`orch mem add --tags "intégration continue,pipeline,build" "..."\`.`;
+
 const RULES = `Memory rules (the operator's lead developer):
 - Before answering about a past decision or an operator preference, run \`orch mem search <words>\` (then \`orch mem show <id>\` if needed).
 - Save only durable decisions, one note each: \`orch mem add "..."\` (project scope by default). Write each note in the operator's language and words: recall is by keyword, so a note in another language is not found.
 - A decision that changes: \`orch mem supersede <id> "..."\`. Never add a contradicting note beside the old one.
-Use only your shell tool. Run commands one at a time.`;
+Use only your shell tool. Run commands one at a time.${process.env.BENCH_TAGS === "0" ? "" : TAGS_RULE}`;
 
 const norm = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
-type Run = { text: string; input: number; cached: number; output: number; usd: number | null; ok: boolean; secs: number };
+type Run = { text: string; input: number; cached: number; output: number; reasoning: number; usd: number | null; ok: boolean; secs: number };
 
 function sh(cmd: string, args: string[], opts: { cwd: string; env: Record<string, string>; input?: string }) {
   const t = Date.now();
@@ -54,35 +71,35 @@ function runHarness(h: string, prompt: string, cwd: string, state: string): Run 
   delete env.ORCH_LEAD;
   delete env.ORCH_LANE;
   if (h === "claude") {
-    const r = sh("claude", ["-p", prompt, "--model", "haiku", "--allowedTools", "Bash", "--output-format", "json"], { cwd, env });
+    const r = sh("claude", ["-p", prompt, "--model", "haiku", ...(EFFORT ? ["--effort", EFFORT] : []), "--allowedTools", "Bash", "--output-format", "json"], { cwd, env });
     try {
       const j = JSON.parse(r.out);
       const u = j.usage ?? {};
-      return { text: j.result ?? "", input: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, output: u.output_tokens ?? 0, usd: j.total_cost_usd ?? null, ok: r.code === 0, secs: r.secs };
-    } catch { return { text: r.out.slice(-500), input: 0, cached: 0, output: 0, usd: null, ok: false, secs: r.secs }; }
+      return { text: j.result ?? "", input: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.output_tokens_details?.thinking_tokens ?? 0, usd: j.total_cost_usd ?? null, ok: r.code === 0, secs: r.secs };
+    } catch { return { text: r.out.slice(-500), input: 0, cached: 0, output: 0, reasoning: 0, usd: null, ok: false, secs: r.secs }; }
   }
   if (h === "codex") {
     const last = join(cwd, ".last.txt");
-    const r = sh("codex", ["exec", "--json", "-C", cwd, "-s", "workspace-write", "--skip-git-repo-check", "-m", "gpt-6-luna", "-c", 'model_reasoning_effort="low"', "-o", last, prompt], { cwd, env });
-    let input = 0, cached = 0, output = 0;
+    const r = sh("codex", ["exec", "--json", "-C", cwd, "-s", "workspace-write", "--skip-git-repo-check", "-m", "gpt-6-luna", "-c", `model_reasoning_effort="${EFFORT ?? "low"}"`, "-c", `service_tier="${FAST ? "fast" : "default"}"`, "-o", last, prompt], { cwd, env });
+    let input = 0, cached = 0, output = 0, reasoning = 0;
     for (const line of r.out.split("\n")) {
       try {
         const e = JSON.parse(line);
         const u = e.usage ?? e.msg?.usage ?? (e.type === "turn.completed" ? e.usage : null);
-        if (u) { input += u.input_tokens ?? 0; cached += u.cached_input_tokens ?? 0; output += u.output_tokens ?? 0; }
+        if (u) { input += u.input_tokens ?? 0; cached += u.cached_input_tokens ?? 0; output += u.output_tokens ?? 0; reasoning += u.reasoning_output_tokens ?? 0; }
       } catch {}
     }
     const text = existsSync(last) ? readFileSync(last, "utf8") : "";
-    return { text, input: input - cached, cached, output, usd: null, ok: r.code === 0, secs: r.secs };
+    return { text, input: input - cached, cached, output, reasoning, usd: null, ok: r.code === 0, secs: r.secs };
   }
   const f = join(cwd, ".prompt.txt");
   writeFileSync(f, prompt);
-  const r = sh("grok", ["--cwd", cwd, "--prompt-file", f, "--output-format", "json", "--always-approve"], { cwd: "/tmp", env });
+  const r = sh("grok", ["--cwd", cwd, "--prompt-file", f, "--output-format", "json", "--always-approve", "-m", MODELS.grok, "--reasoning-effort", EFFORT ?? "high"], { cwd: "/tmp", env });
   try {
     const j = JSON.parse(r.out);
     const u = j.usage ?? {};
-    return { text: j.text ?? "", input: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, output: u.output_tokens ?? 0, usd: j.total_cost_usd ?? null, ok: r.code === 0, secs: r.secs };
-  } catch { return { text: r.out.slice(-500), input: 0, cached: 0, output: 0, usd: null, ok: false, secs: r.secs }; }
+    return { text: j.text ?? "", input: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.reasoning_tokens ?? 0, usd: j.total_cost_usd ?? null, ok: r.code === 0, secs: r.secs };
+  } catch { return { text: r.out.slice(-500), input: 0, cached: 0, output: 0, reasoning: 0, usd: null, ok: false, secs: r.secs }; }
 }
 
 function repo(dir: string) {
@@ -90,24 +107,27 @@ function repo(dir: string) {
   spawnSync("sh", ["-c", "git init -q && printf 'Atlas\\n' > README.md && git add . && git -c user.email=b@b -c user.name=b commit -q -m init"], { cwd: dir });
 }
 
-const [outDir = "/tmp/mem-bench", list = "claude,codex,grok"] = process.argv.slice(2);
-for (const h of list.split(",")) {
-  const base = join(outDir, h);
-  const memRepo = join(base, "mem-repo"), ctlRepo = join(base, "ctl-repo");
-  repo(memRepo); repo(ctlRepo);
-  const memState = join(base, "mem-state"), ctlState = join(base, "ctl-state");
-  mkdirSync(memState, { recursive: true }); mkdirSync(ctlState, { recursive: true });
-  const learnPrompt = `${RULES}\n\nWork only inside ${memRepo}. During this work session the operator tells you, in order:\n${FACTS.map((f) => `- ${f.say}`).join("\n")}\nLater in the same session the operator adds:\n${FACTS.filter((f) => f.fix).map((f) => `- ${f.fix}`).join("\n")}\nApply the memory rules to everything the operator said, then reply "done".`;
-  const learn = runHarness(h, learnPrompt, memRepo, memState);
-  const notes = spawnSync("sh", ["-c", "ls .orch/mem 2>/dev/null | wc -l"], { cwd: memRepo, encoding: "utf8" }).stdout.trim();
-  const rows: unknown[] = [];
-  for (const f of FACTS.slice(0, Number(process.env.BENCH_N ?? FACTS.length))) {
-    const ask = (dir: string) => `${RULES}\n\nWork only inside ${dir}. The operator asks: ${f.q}\nAnswer in one short line. If you do not know, say "unknown".`;
-    const mem = runHarness(h, ask(memRepo), memRepo, memState);
-    const ctl = runHarness(h, ask(ctlRepo), ctlRepo, ctlState);
-    const score = (r: Run) => ({ correct: norm(r.text).includes(norm(f.a)), stale: !!f.old && norm(r.text).includes(norm(f.old)) && !norm(r.text).includes(norm(f.a)) });
-    rows.push({ id: f.id, corrected: !!f.fix, mem: { ...mem, ...score(mem), text: mem.text.slice(0, 200) }, ctl: { ...ctl, ...score(ctl), text: ctl.text.slice(0, 200) } });
-    writeFileSync(join(base, "results.json"), JSON.stringify({ harness: h, learn: { ...learn, text: learn.text.slice(0, 300), notes: Number(notes) }, rows }, null, 2));
+if (import.meta.main) {
+  const [outDir = "/tmp/mem-bench", list = "claude,codex,grok"] = process.argv.slice(2);
+  for (const h of list.split(",")) {
+    const base = join(outDir, h);
+    const memRepo = join(base, "mem-repo"), ctlRepo = join(base, "ctl-repo");
+    repo(memRepo); repo(ctlRepo);
+    const memState = join(base, "mem-state"), ctlState = join(base, "ctl-state");
+    mkdirSync(memState, { recursive: true }); mkdirSync(ctlState, { recursive: true });
+    const learnPrompt = `${RULES}\n\nWork only inside ${memRepo}. During this work session the operator tells you, in order:\n${FACTS.map((f) => `- ${f.say}`).join("\n")}\nLater in the same session the operator adds:\n${FACTS.filter((f) => f.fix).map((f) => `- ${f.fix}`).join("\n")}\nApply the memory rules to everything the operator said, then reply "done".`;
+    const learn = runHarness(h, learnPrompt, memRepo, memState);
+    const notes = spawnSync("sh", ["-c", "ls .orch/mem 2>/dev/null | wc -l"], { cwd: memRepo, encoding: "utf8" }).stdout.trim();
+    const rows: unknown[] = [];
+    for (const f of FACTS.slice(0, Number(process.env.BENCH_N ?? FACTS.length))) {
+      const ask = (dir: string) => `${RULES}\n\nWork only inside ${dir}. The operator asks: ${f.q}\nAnswer in one short line. If you do not know, say "unknown".`;
+      const mem = runHarness(h, ask(memRepo), memRepo, memState);
+      const skip: Run = { text: "", input: 0, cached: 0, output: 0, reasoning: 0, usd: null, ok: true, secs: 0 };
+      const ctl = process.env.BENCH_CONTROL === "0" ? skip : runHarness(h, ask(ctlRepo), ctlRepo, ctlState);
+      const score = (r: Run) => ({ correct: norm(r.text).includes(norm(f.a)), stale: !!f.old && norm(r.text).includes(norm(f.old)) && !norm(r.text).includes(norm(f.a)) });
+      rows.push({ id: f.id, corrected: !!f.fix, mem: { ...mem, ...score(mem), text: mem.text.slice(0, 200) }, ctl: { ...ctl, ...score(ctl), text: ctl.text.slice(0, 200) } });
+      writeFileSync(join(base, "results.json"), JSON.stringify({ harness: h, config: { model: MODELS[h], effort: EFFORTS[h], fast: h === "claude" ? null : FAST, tags: process.env.BENCH_TAGS !== "0", control: process.env.BENCH_CONTROL !== "0" }, learn: { ...learn, text: learn.text.slice(0, 300), notes: Number(notes) }, rows }, null, 2));
+    }
+    console.log(`${h} done`);
   }
-  console.log(`${h} done`);
 }
