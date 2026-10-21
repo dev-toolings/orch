@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { laneGc, laneReview, laneRun, listLanes, setupCommand } from "../src/lane.ts";
@@ -77,7 +77,7 @@ function fakeOrca(mode = "up") {
   writeFileSync(join(root, "orca-mode"), mode);
   const script = `#!${process.execPath}
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, writeFileSync, openSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync, openSync } from 'node:fs';
 const root = ${JSON.stringify(root)};
 const args = process.argv.slice(2), verb = args.slice(0, 2).join(' ');
 const flag = k => args[args.indexOf(k) + 1];
@@ -91,8 +91,28 @@ const db = root + '/orca-resources';
 const resources = existsSync(db) ? JSON.parse(readFileSync(db, 'utf8')) : {};
 const persist = () => writeFileSync(db, JSON.stringify(resources));
 if (verb === 'worktree current') ok({worktree:{id:'fake::' + process.cwd(),repoId:'fake',path:process.cwd(),hostId:mode === 'remote' ? 'ssh:remote' : 'local'}});
+if (verb === 'repo show') ok({repo:{id:'fake',kind:mode === 'folder' ? 'folder' : 'git'}});
 if (verb === 'worktree create') {
-  const name = flag('--name'), path = root + '/orca-' + name;
+  const name = flag('--name');
+  let path = root + '/orca-' + name;
+  if (['repo-path', 'repo-alias', 'repo-subdir', 'standalone', 'unrelated-linked'].includes(mode)) {
+    if (mode === 'repo-path') path = process.cwd();
+    else if (mode === 'repo-alias') symlinkSync(process.cwd(), path);
+    else if (mode === 'repo-subdir') { path = process.cwd() + '/.git'; }
+    else {
+      mkdirSync(path);
+      spawnSync('git', ['init', '-q', path]);
+      spawnSync('git', ['-C', path, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+      if (mode === 'unrelated-linked') {
+        spawnSync('git', ['-C', path, 'worktree', 'add', '-q', '-b', 'child', path + '-child']);
+        path += '-child';
+      }
+    }
+    const w = {id:'fake::' + path,path,branch:spawnSync('git', ['branch', '--show-current'], {encoding:'utf8'}).stdout.trim()};
+    resources['id:' + w.id] = {worktree:w};
+    resources['name:' + name] = resources['id:' + w.id]; persist();
+    ok({worktree:w});
+  }
   const r = spawnSync('git', ['worktree','add','-q','-b','fake/' + name,path,flag('--base-branch')]);
   if (r.status !== 0) fail('create_failed');
   const w = {id:'fake::' + path,path,branch:'refs/heads/fake/' + name};
@@ -207,6 +227,82 @@ describe("Orca lane channel", () => {
     } finally {
       if (routed === undefined) delete process.env.ORCA_ENVIRONMENT;
       else process.env.ORCA_ENVIRONMENT = routed;
+      rmSync(join(bin, "orca"), { force: true });
+    }
+  });
+
+  test("folder projects fall back to headless before any Orca mutation", async () => {
+    fakeOrca("folder");
+    const before = readFileSync(join(root, "orca-calls"), "utf8");
+    fake("codex", "true");
+    try {
+      const { state, report } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile, channel: "orca" });
+      expect(state?.status).toBe("noop");
+      expect(state?.channel).toBe("headless");
+      expect(state?.orca).toBeUndefined();
+      expect(state?.worktree).not.toBe(repo);
+      expect(report).toContain("CHANNEL: Orca repo kind folder is not git; worker remains headless");
+      const calls = readFileSync(join(root, "orca-calls"), "utf8").slice(before.length).trim().split("\n").map(l => JSON.parse(l).slice(0, 2));
+      expect(calls).toEqual([["worktree", "current"], ["repo", "show"]]);
+      expect(laneGc(state!.id)).toContain(`removed ${state!.id}`);
+    } finally { rmSync(join(bin, "orca"), { force: true }); }
+  });
+
+  test.each(["repo-path", "repo-alias", "repo-subdir", "standalone", "unrelated-linked"])("create refuses %s before renaming or starting a worker", async (mode) => {
+    fakeOrca(mode);
+    const before = readFileSync(join(root, "orca-calls"), "utf8");
+    const branch = sh(repo, "git branch --show-current").stdout;
+    const marker = join(root, `unsafe-${mode}-worker`);
+    fake("codex", `touch ${marker}`);
+    let failed: ReturnType<typeof listLanes>[number] | undefined;
+    try {
+      const { state, report } = await laneRun({ to: "codex", specPath: spec("true"), repo, profile, channel: "orca" });
+      expect(state).toBeUndefined();
+      expect(report).toContain("STATUS: unavailable");
+      expect(report).toContain(mode === "repo-path" || mode === "repo-alias"
+        ? "Orca worktree resolves to the caller repo" : "Orca returned no distinct linked git worktree");
+      expect(sh(repo, "git branch --show-current").stdout).toBe(branch);
+      expect(existsSync(marker)).toBe(false);
+      failed = listLanes().find(s => report.includes(`ID: ${s.id}\n`));
+      expect(failed).toBeDefined();
+      // A lost create reply is recovered by name during gc. That recovery
+      // must not turn a rejected caller checkout into a removal target.
+      if (mode === "repo-path" || mode === "repo-alias") {
+        expect(laneGc(failed!.id)).toContain(`kept ${failed!.id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
+      }
+      const calls = readFileSync(join(root, "orca-calls"), "utf8").slice(before.length);
+      expect(calls).toContain('["worktree","create"');
+      expect(calls).not.toContain('["worktree","rm"');
+      expect(calls).not.toContain('["terminal"');
+    } finally {
+      if (failed) rmSync(join(process.env.ORCH_STATE!, "lanes", failed.id), { recursive: true, force: true });
+      rmSync(join(bin, "orca"), { force: true });
+    }
+  });
+
+  test("gc retains a lane pointing at its repo, including a symlink alias, without Orca removal", () => {
+    fakeOrca();
+    const before = readFileSync(join(root, "orca-calls"), "utf8");
+    const branch = sh(repo, "git branch --show-current").stdout.trim();
+    const id = "unsafe-caller-checkout";
+    const dir = join(process.env.ORCH_STATE!, "lanes", id);
+    const alias = join(root, "caller-repo-alias");
+    symlinkSync(repo, alias);
+    mkdirSync(dir, { recursive: true });
+    try {
+      for (const worktree of [repo, alias]) {
+        writeFileSync(join(dir, "state.json"), JSON.stringify({
+          id, to: "codex", repo, base: "HEAD", branch, worktree, status: "unavailable", changed: false,
+          usage: {}, started: "", ended: "", channel: "orca", orca: { selector: `id:fake::${repo}` },
+        }));
+        expect(laneGc(id)).toContain(`kept ${id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
+        expect(existsSync(join(dir, "state.json"))).toBe(true);
+        expect(existsSync(repo)).toBe(true);
+        expect(sh(repo, "git branch --show-current").stdout.trim()).toBe(branch);
+      }
+      expect(readFileSync(join(root, "orca-calls"), "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
       rmSync(join(bin, "orca"), { force: true });
     }
   });

@@ -2,7 +2,7 @@
 // lane: hand one bounded task to another harness in its own git worktree,
 // optionally observed in Orca. No model call happens in this process.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { git } from "./git.ts";
@@ -49,13 +49,42 @@ function orcaCall(repo: string, args: string[], timeout = 5000): any {
   return response.result;
 }
 
-function orcaParent(repo: string): { id: string; repoId: string } | null {
+function orcaParent(repo: string): { parent?: { id: string; repoId: string }; reason?: string } {
   try {
     const w = orcaCall(repo, ["worktree", "current"]).worktree;
     // The observer reads local lane files. Never route it to another host,
     // nor silently parent it to the terminal's unrelated current workspace.
-    return w?.hostId === "local" && w.path === repo && typeof w.id === "string" && typeof w.repoId === "string" ? w : null;
-  } catch { return null; }
+    if (w?.hostId !== "local" || w.path !== repo || typeof w.id !== "string" || typeof w.repoId !== "string") return {};
+    const registered = orcaCall(repo, ["repo", "show", "--repo", `id:${w.repoId}`]).repo;
+    if (registered?.kind !== "git") return { reason: `Orca repo kind ${registered?.kind ?? "unknown"} is not git; worker remains headless` };
+    return { parent: w };
+  } catch { return {}; }
+}
+
+function resolvedPath(path: string): string {
+  return existsSync(path) ? realpathSync(path) : resolve(path);
+}
+
+function refuseRepoPath(repo: string, path: string): void {
+  if (resolvedPath(path) === resolvedPath(repo)) throw new Error("Orca worktree resolves to the caller repo; refusing to use or remove it");
+}
+
+function assertOrcaWorktree(repo: string, path: string): void {
+  refuseRepoPath(repo, path);
+  // A different directory is insufficient: it must be its own linked
+  // checkout of this repo, including when the caller is itself linked.
+  const top = git(path, "rev-parse", "--show-toplevel");
+  const common = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const dir = git(path, "rev-parse", "--absolute-git-dir");
+  const repoCommon = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const repoDir = git(repo, "rev-parse", "--absolute-git-dir");
+  if (!top.ok || !common.ok || !dir.ok || !repoCommon.ok || !repoDir.ok
+    || resolvedPath(top.out) !== resolvedPath(path)
+    || resolvedPath(common.out) !== resolvedPath(repoCommon.out)
+    || resolvedPath(dir.out) === resolvedPath(common.out)
+    || resolvedPath(dir.out) === resolvedPath(repoDir.out)) {
+    throw new Error("Orca returned no distinct linked git worktree of the caller repo");
+  }
 }
 
 function saveLane(dir: string, state: LaneState): void {
@@ -115,9 +144,11 @@ while (existsSync(dir + '/state.json')) {
 }
 
 function removeOrca(state: LaneState): void {
+  refuseRepoPath(state.repo, state.worktree);
   const selector = state.orca!.selector;
   try {
     const w = orcaCall(state.repo, ["worktree", "show", "--worktree", selector]).worktree;
+    if (typeof w?.path === "string") refuseRepoPath(state.repo, w.path);
     // Recover a creation whose reply was lost before we recorded its path
     // or renamed its branch. Persist before removal can become asynchronous.
     if (selector.startsWith("name:")) {
@@ -209,7 +240,8 @@ export async function laneRun(opts: {
     const base = b.sha;
     live = { id, to: opts.to, repo, base, branch, worktree: wt, status: "running", changed: true,
       usage: {}, started, ended: "", pid: process.pid, channel: "headless" };
-    const parent = opts.channel === "headless" ? null : orcaParent(repo);
+    const { parent, reason: fallbackReason } = opts.channel === "headless" ? {} : orcaParent(repo);
+    channelReason = fallbackReason ?? "";
     if (parent) {
       // Persist ownership before the mutation: a lost create response must
       // leave a selector gc can recover, never an untracked Orca resource.
@@ -226,6 +258,7 @@ export async function laneRun(opts: {
         catch { throw e; }
       }
       if (!created?.path || !created?.id || !existsSync(created.path)) throw new Error("Orca returned no local worktree");
+      assertOrcaWorktree(repo, created.path);
       wt = created.path;
       live.worktree = wt;
       live.orca.selector = `id:${created.id}`;
