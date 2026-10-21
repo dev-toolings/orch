@@ -8,11 +8,11 @@ import { parseArgs } from "node:util";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { parse } from "yaml";
-import { loadSources } from "./docs.ts";
-import { workerArgv } from "./harness.ts";
-import { addNote, type Caller, recentNotes, searchNotes } from "./mem.ts";
-import { HARNESSES, loadProfile, ROOT } from "./profile.ts";
-import { leadPrompt, render } from "./render.ts";
+import { loadSources } from "../docs/docs.ts";
+import { workerArgv } from "../harness/harness.ts";
+import { addNote, type Caller, recentNotes, searchNotes } from "../mem/mem.ts";
+import { HARNESSES, loadProfile, ROOT } from "../core/profile.ts";
+import { leadPrompt, render } from "../install/render.ts";
 
 interface Case { id: string; family: string; title: string; level: number; gate: string }
 

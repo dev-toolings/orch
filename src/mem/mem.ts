@@ -3,8 +3,9 @@
 // stable cached prefix. No model call, no index: notes are read on demand.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { git } from "./git.ts";
-import { stateDir } from "./paths.ts";
+import { git } from "../core/git.ts";
+import { stateDir } from "../core/paths.ts";
+import { similar } from "./similar.ts";
 
 export type Scope = "operator" | "project" | "lead";
 export const SCOPES: Scope[] = ["operator", "project", "lead"];
@@ -105,6 +106,16 @@ function noteFrom(body: string, scope: Scope, tags: string[], caller: Caller, no
     body,
     ...extra,
   };
+}
+
+// Pairs of active notes where the newer likely restates or changes the older,
+// best first. Read after the fact (`orch mem review`): checking at write time
+// cost 11 to 74% more tokens per writing session for no gain in the A/B bench
+// of 2026-10-21, since leads already search before they write.
+export function closePairs(caller: Caller, opts: { state?: string; cwd?: string; scope?: Scope; limit?: number } = {}): { newer: Note; older: Note; score: number }[] {
+  const notes = listNotes(caller, opts).reverse();
+  const pairs = notes.flatMap((newer, i) => similar(newer.body, notes.slice(0, i), (n) => n.body).map((m) => ({ newer, older: m.item, score: m.score })));
+  return pairs.sort((a, b) => b.score - a.score).slice(0, opts.limit ?? 10);
 }
 
 export function addNote(
@@ -229,7 +240,9 @@ export function supersedeNote(
   const body = input.body.trim();
   if (!body) throw new Error("mem supersede: empty note");
   const now = opts.now ?? new Date();
-  const replacement = saveNote(noteFrom(body, old.scope, input.tags ?? [], caller, now, { supersedes: old.id }), opts);
+  // no tags given: keep the old note's, so a correction stays as findable
+  const tags = input.tags?.length ? input.tags : old.tags;
+  const replacement = saveNote(noteFrom(body, old.scope, tags, caller, now, { supersedes: old.id }), opts);
   const rewritten: Note = { ...old, status: "superseded", supersededBy: replacement.id };
   writeFileSync(join(scopeDir(old.scope, opts), `${old.id}.md`), render(rewritten));
   return replacement;
@@ -264,4 +277,4 @@ export function formatNote(n: Note): string {
 }
 
 export const MEM_USAGE =
-  "usage: orch mem add [--scope operator|project|lead] [--tags a,b] <text|-> | search <words> [--scope s] [--limit n] [--all] | recent [--scope s] [--limit n] [--all] | show <id> | supersede <id> <text|-> | forget <id> [--reason text]";
+  "usage: orch mem add [--scope operator|project|lead] [--tags a,b (3 to 6 words to ask it by, not in the text)] <text|-> | search <words> [--scope s] [--limit n] [--all] | recent [--scope s] [--limit n] [--all] | review [--scope s] [--limit n] | show <id> | supersede <id> [--tags a,b] <text|-> | forget <id> [--reason text]";

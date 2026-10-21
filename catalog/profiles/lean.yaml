@@ -3,17 +3,23 @@ name: lean
 lead:
   claude: { model: opus, effort: medium, permission_mode: bypassPermissions }
   codex: { model: gpt-6-astra, effort: medium, permission_mode: yolo }
-  grok: { model: null }
+  grok: { model: grok-4.7-build-fast, effort: high }
 lanes:
-  codex: { model: gpt-5.6-luna, effort: medium }
-  grok: { model: null }
+  codex: { model: gpt-6-luna, effort: medium }
+  grok: { model: grok-4.7-build-fast, effort: high }
   claude: { model: haiku, effort: medium }
+explore:
+  claude: haiku
 review:
-  claude: { to: codex, model: gpt-5.6-luna, effort: high }
+  claude: { to: codex, model: gpt-6-luna, effort: high }
   codex: { to: claude, model: sonnet, effort: medium }
-  grok: { to: codex, model: gpt-5.6-luna, effort: high }
+  grok: { to: codex, model: gpt-6-luna, effort: high }
 limits:
-  max_concurrent: 2
+  max_concurrent_ceiling: 2
+  verify_concurrent: 1
+  worker_gib: 0.5
+  verify_gib: 1.5
+  reserve_gib: 4
   max_depth: 1
   report_max_bytes: 3072
   timeout_seconds: 900

@@ -35,10 +35,14 @@ recall on demand, never reload it.
   preferences and methods that hold everywhere; lead is for your own
   doctrine. Trivia and anything already in the repository are not saved.
   Write each note in the operator's language and words: recall is by
-  keyword, so a note in another language is not found.
+  keyword, so a note in another language is not found. Add `--tags` with 3
+  to 6 words someone would use to ask about it that the note lacks
+  (category, synonyms): `--tags "intégration continue,pipeline,build"`.
 - A decision that changes: `orch mem supersede <id> "..."`; one that no
   longer holds: `orch mem forget <id> --reason "..."`. Never add a
   contradicting note beside the old one.
+- When the operator asks to tidy memory, run `orch mem review` and settle
+  each close pair: forget the outdated note, or leave different facts.
 - Workers never write memory: put what they need in the spec.
 
 ## Docs
@@ -56,13 +60,14 @@ recall on demand, never reload it.
 
 The operator explicitly asked lead sessions to route work. This overrides
 "work directly by default" for the two cases below, within the global budget:
-at most 5 concurrent workers including native subagents, depth 1.
+at most `lane budget` concurrent workers including native subagents (computed
+from the machine, capped by the profile), depth 1.
 
 - Do it yourself: decisions, interfaces, debugging hypotheses, and small
   edits (about 2 files or 60 lines or fewer). A worker costs about 10k
   tokens of fixed prefix before doing anything.
 - Exploration that would read many files: your harness's read-only explorer
-  (Claude `Explore`, Codex `explorer`, Grok `lead-explore`). Keep only its
+  (Claude and Grok `lead-explore`, Codex `explorer`). Keep only its
   conclusions.
 - Mechanical code above that size: `lane run`. Write the spec to a file first.
 - Native subagents get no name unless you must message them later: a named
@@ -115,6 +120,10 @@ Ask for a cross-family review (`lane review --base <base> --goal "<goal>"`)
 only for a data migration, a security-sensitive path, a public API change
 (add `--risk high`: a stronger reviewer), or when the operator asks (default
 risk). Otherwise verify the diff yourself.
+
+Another model's opinion on a question, not a diff: write the question to a
+file and run `lane ask --file <f>` (`--risk high` for the stronger reviewer,
+`--to` for another harness). Never call `codex`, `claude` or `grok` yourself.
 
 ## Reporting to the operator
 

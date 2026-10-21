@@ -2,20 +2,21 @@
 // lane: hand one bounded task to another harness in its own git worktree,
 // optionally observed in Orca. No model call happens in this process.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { git } from "./git.ts";
-import { pinnedGrok, grokProfileInstalled } from "./grok-runtime.ts";
-import { classify, parseWorkerOutput, PREAMBLE, REVIEW_PREAMBLE, type Status, type Usage, workerArgv } from "./harness.ts";
-import { bound, tail } from "./output.ts";
-import { stateDir } from "./paths.ts";
-import { HARNESSES, type Harness, loadProfile, type Profile } from "./profile.ts";
-import { runLogged, workerEnv } from "./proc.ts";
-import { fmtUsage, laneReport, reviewReport } from "./report.ts";
-import { releaseSlot, reserveSlot } from "./slots.ts";
-import { missingFields, parseSpec, type Spec } from "./spec.ts";
-import { statusEntries, workerBase } from "./worktree.ts";
+import { git } from "./core/git.ts";
+import { pinnedGrok, grokProfileInstalled } from "./harness/grok-runtime.ts";
+import { classify, parseWorkerOutput, PREAMBLE, REVIEW_PREAMBLE, type Status, type Usage, workerArgv } from "./harness/harness.ts";
+import { bound, tail } from "./core/output.ts";
+import { stateDir } from "./core/paths.ts";
+import { HARNESSES, type Harness, loadProfile, type Profile } from "./core/profile.ts";
+import { runLogged, workerEnv } from "./harness/proc.ts";
+import { fmtUsage, laneReport, reviewReport } from "./lanes/report.ts";
+import { releaseSlot, reserveSlot } from "./lanes/slots.ts";
+import { laneBudget, type MachineFigures } from "./lanes/budget.ts";
+import { missingFields, parseSpec, type Spec } from "./lanes/spec.ts";
+import { statusEntries, workerBase } from "./lanes/worktree.ts";
 
 // The worktree is a bare checkout: no installed dependencies, no gitignored
 // local files. Without provisioning, a worker cannot run the project's checks
@@ -49,13 +50,42 @@ function orcaCall(repo: string, args: string[], timeout = 5000): any {
   return response.result;
 }
 
-function orcaParent(repo: string): { id: string; repoId: string } | null {
+function orcaParent(repo: string): { parent?: { id: string; repoId: string }; reason?: string } {
   try {
     const w = orcaCall(repo, ["worktree", "current"]).worktree;
     // The observer reads local lane files. Never route it to another host,
     // nor silently parent it to the terminal's unrelated current workspace.
-    return w?.hostId === "local" && w.path === repo && typeof w.id === "string" && typeof w.repoId === "string" ? w : null;
-  } catch { return null; }
+    if (w?.hostId !== "local" || w.path !== repo || typeof w.id !== "string" || typeof w.repoId !== "string") return {};
+    const registered = orcaCall(repo, ["repo", "show", "--repo", `id:${w.repoId}`]).repo;
+    if (registered?.kind !== "git") return { reason: `Orca repo kind ${registered?.kind ?? "unknown"} is not git; worker remains headless` };
+    return { parent: w };
+  } catch { return {}; }
+}
+
+function resolvedPath(path: string): string {
+  return existsSync(path) ? realpathSync(path) : resolve(path);
+}
+
+function refuseRepoPath(repo: string, path: string): void {
+  if (resolvedPath(path) === resolvedPath(repo)) throw new Error("Orca worktree resolves to the caller repo; refusing to use or remove it");
+}
+
+function assertOrcaWorktree(repo: string, path: string): void {
+  refuseRepoPath(repo, path);
+  // A different directory is insufficient: it must be its own linked
+  // checkout of this repo, including when the caller is itself linked.
+  const top = git(path, "rev-parse", "--show-toplevel");
+  const common = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const dir = git(path, "rev-parse", "--absolute-git-dir");
+  const repoCommon = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const repoDir = git(repo, "rev-parse", "--absolute-git-dir");
+  if (!top.ok || !common.ok || !dir.ok || !repoCommon.ok || !repoDir.ok
+    || resolvedPath(top.out) !== resolvedPath(path)
+    || resolvedPath(common.out) !== resolvedPath(repoCommon.out)
+    || resolvedPath(dir.out) === resolvedPath(common.out)
+    || resolvedPath(dir.out) === resolvedPath(repoDir.out)) {
+    throw new Error("Orca returned no distinct linked git worktree of the caller repo");
+  }
 }
 
 function saveLane(dir: string, state: LaneState): void {
@@ -115,9 +145,11 @@ while (existsSync(dir + '/state.json')) {
 }
 
 function removeOrca(state: LaneState): void {
+  refuseRepoPath(state.repo, state.worktree);
   const selector = state.orca!.selector;
   try {
     const w = orcaCall(state.repo, ["worktree", "show", "--worktree", selector]).worktree;
+    if (typeof w?.path === "string") refuseRepoPath(state.repo, w.path);
     // Recover a creation whose reply was lost before we recorded its path
     // or renamed its branch. Persist before removal can become asynchronous.
     if (selector.startsWith("name:")) {
@@ -138,6 +170,20 @@ function removeOrca(state: LaneState): void {
   if (existsSync(state.worktree)) throw new Error("Orca worktree removal pending; run lane gc again");
 }
 
+// A finished lane keeps only its branch: the result is committed there and
+// INTEGRATE reads the branch, so the checkout and its Orca entry go now. A
+// worktree git cannot vouch for as clean stays for gc and its rules; a failed
+// removal is retried by gc. Never touch a worktree that is the repo itself.
+function cutWorktree(state: LaneState): void {
+  if (!existsSync(state.worktree) || resolvedPath(state.worktree) === resolvedPath(state.repo)) return;
+  const st = statusEntries(state.worktree);
+  if (st === null || st.length) return;
+  try {
+    if (state.orca) removeOrca(state);
+    else git(state.repo, "worktree", "remove", "--force", state.worktree);
+  } catch {}
+}
+
 export interface LaneState {
   id: string;
   to: Harness;
@@ -149,6 +195,8 @@ export interface LaneState {
   changed: boolean;
   reason?: string;
   usage: Usage;
+  peakRssMb?: { worker?: number; verify?: number };
+  session?: string;
   started: string;
   ended: string;
   channel?: "headless" | "orca";
@@ -156,10 +204,27 @@ export interface LaneState {
   orca?: { selector: string; terminal?: string };
 }
 
-function depthRefusal(label: "LANE REPORT" | "LANE REVIEW", maxDepth: number): string | null {
+function depthRefusal(label: "LANE REPORT" | "LANE REVIEW" | "LANE ASK", maxDepth: number): string | null {
   return process.env.ORCH_LANE === "1"
     ? `${label}\nSTATUS: refused-by-lane\nREASON: max_depth ${maxDepth}: a lane worker cannot start a lane\n`
     : null;
+}
+
+async function reserveVerifySlot(state: string, max: number, id: string, timeoutMs: number): Promise<{ slot: number; timeoutMs: number } | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const slot = reserveSlot(state, max, id, "verify-slots");
+    if (slot !== null) {
+      const remaining = deadline - Date.now();
+      if (remaining > 0) return { slot, timeoutMs: remaining };
+      releaseSlot(state, slot, "verify-slots");
+      return null;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    await Bun.sleep(Math.min(2000, remaining));
+  }
+  return null;
 }
 
 export async function laneRun(opts: {
@@ -169,6 +234,7 @@ export async function laneRun(opts: {
   profile: Profile;
   effort?: string;
   channel?: string;
+  machine?: MachineFigures;
 }): Promise<{ report: string; state?: LaneState }> {
   const p = opts.profile;
   const depth = depthRefusal("LANE REPORT", p.limits.max_depth);
@@ -191,8 +257,9 @@ export async function laneRun(opts: {
 
   const id = `${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}-${opts.to}-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;
   const sd = stateDir();
-  const slot = reserveSlot(sd, p.limits.max_concurrent, id);
-  if (slot === null) return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${p.limits.max_concurrent} lanes already running\n` };
+  const budget = laneBudget(p.limits, opts.machine);
+  const slot = reserveSlot(sd, budget.budget, id);
+  if (slot === null) return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: lane budget ${budget.budget} (limited by ${budget.limitedBy}) already running\n` };
 
   const dir = join(sd, "lanes", id);
   mkdirSync(dir, { recursive: true });
@@ -208,8 +275,9 @@ export async function laneRun(opts: {
     if (!b.ok) return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${b.reason}\n` };
     const base = b.sha;
     live = { id, to: opts.to, repo, base, branch, worktree: wt, status: "running", changed: true,
-      usage: {}, started, ended: "", pid: process.pid, channel: "headless" };
-    const parent = opts.channel === "headless" ? null : orcaParent(repo);
+      usage: {}, started, ended: "", session: process.env.ORCH_SESSION, pid: process.pid, channel: "headless" };
+    const { parent, reason: fallbackReason } = opts.channel === "headless" ? {} : orcaParent(repo);
+    channelReason = fallbackReason ?? "";
     if (parent) {
       // Persist ownership before the mutation: a lost create response must
       // leave a selector gc can recover, never an untracked Orca resource.
@@ -226,6 +294,7 @@ export async function laneRun(opts: {
         catch { throw e; }
       }
       if (!created?.path || !created?.id || !existsSync(created.path)) throw new Error("Orca returned no local worktree");
+      assertOrcaWorktree(repo, created.path);
       wt = created.path;
       live.worktree = wt;
       live.orca.selector = `id:${created.id}`;
@@ -279,7 +348,7 @@ export async function laneRun(opts: {
         // A state record keeps the diagnostics discoverable, and lane gc removes them.
         const failed: LaneState = {
           id, to: opts.to, repo, base, branch, worktree: wt, status: "unavailable", changed: false, usage: {}, started, ended: new Date().toISOString(),
-          channel: live.channel,
+          session: process.env.ORCH_SESSION, channel: live.channel,
         };
         saveLane(dir, failed);
         return { report: bound(`LANE REPORT\nSTATUS: unavailable\nREASON: ${why}\nSETUP: ${setup.display} (${setup.source})\nLOG: ${setupLog}\n`, p.limits.report_max_bytes) };
@@ -310,13 +379,25 @@ export async function laneRun(opts: {
 
     let verifyOk: boolean | null = null;
     let verifyOut = "not run";
+    let verifyPeakRssMb: number | undefined;
     if (spec.verify && !run.timedOut) {
       const verifyLog = join(dir, "verify.log");
-      const v = await runLogged(["sh", "-c", spec.verify], {
-        cwd: wt, logPath: verifyLog, timeoutMs: 600_000, env: workerEnv(),
-      });
-      verifyOk = v.code === 0 && !v.timedOut;
-      verifyOut = `exit ${v.code}${v.timedOut ? " (timeout)" : ""}\n${tail(readFileSync(verifyLog, "utf8"), 12)}`;
+      const verify = await reserveVerifySlot(sd, p.limits.verify_concurrent, id, 600_000);
+      if (verify === null) {
+        verifyOk = false;
+        verifyOut = "timeout waiting for verify slot";
+      } else {
+        try {
+          const v = await runLogged(["sh", "-c", spec.verify], {
+            cwd: wt, logPath: verifyLog, timeoutMs: verify.timeoutMs, env: workerEnv(),
+          });
+          verifyPeakRssMb = v.peakRssMb;
+          verifyOk = v.code === 0 && !v.timedOut;
+          verifyOut = `exit ${v.code}${v.timedOut ? " (timeout)" : ""}\n${tail(readFileSync(verifyLog, "utf8"), 12)}`;
+        } finally {
+          releaseSlot(sd, verify.slot, "verify-slots");
+        }
+      }
     }
 
     // Without a reliable status the change cannot be measured: never report it as noop.
@@ -340,19 +421,25 @@ export async function laneRun(opts: {
     const { message, usage } = parseWorkerOutput(opts.to, log, last);
     const model = choice.model ?? "inherited";
     const effort = opts.effort ?? spec.reasoning ?? choice.effort ?? "default";
+    const peakRssMb = {
+      ...(run.peakRssMb === undefined ? {} : { worker: run.peakRssMb }),
+      ...(verifyPeakRssMb === undefined ? {} : { verify: verifyPeakRssMb }),
+    };
 
     const state: LaneState = {
       id, to: opts.to, repo, base, branch, worktree: wt, status, changed, usage, started, ended: new Date().toISOString(),
-      reason, channel: live.channel, orca: live.orca,
+      reason, session: process.env.ORCH_SESSION, channel: live.channel, orca: live.orca,
+      ...(Object.keys(peakRssMb).length ? { peakRssMb } : {}),
     };
 
     const report = laneReport({
       to: opts.to, model, effort, channel, channelReason, status, reason, id, base, snapshotOf: b.snapshotOf,
-      branch, setupLine, stat, verifyOut, message, usage, changed, logPath,
+      branch, setupLine, stat, verifyOut, message, usage, changed, logPath, peakRssMb,
     });
     const bounded = bound(report, p.limits.report_max_bytes);
     writeFileSync(join(dir, "report.txt"), bounded);
     saveLane(dir, state);
+    cutWorktree(state);
     return { report: bounded, state };
   } catch (e) {
     const reason = (e as Error).message;
@@ -363,8 +450,30 @@ export async function laneRun(opts: {
   }
 }
 
-export async function laneReview(opts: { from: Harness; to?: Harness; base: string; goal: string; repo: string; profile: Profile; risk?: "normal" | "high" }) {
-  const depth = depthRefusal("LANE REVIEW", opts.profile.limits.max_depth);
+type ConsultOpts = { from: Harness; to?: Harness; repo: string; profile: Profile; risk?: "normal" | "high" };
+
+export function laneReview(opts: ConsultOpts & { base: string; goal: string }) {
+  return consult("REVIEW", opts, `${REVIEW_PREAMBLE}Review the changes from ${opts.base} to the working tree of this repository (git diff ${opts.base}) against this goal:
+${opts.goal}
+
+Check that the change does what was asked, nothing missing, nothing unasked smuggled in, and name any risk.
+Answer under 300 words: first line "VERDICT: ship | fix-first | rethink", then numbered findings with file and fix.
+`);
+}
+
+// A second opinion from another model on a question (no diff), through the same
+// read-only reviewer choice, slot, timeout and closed stdin as a review: the lead
+// never calls a harness binary by hand (a backgrounded `codex exec` blocks on stdin).
+export function laneAsk(opts: ConsultOpts & { question: string }) {
+  return consult("ASK", opts, `${REVIEW_PREAMBLE}Answer this question from the orchestrating session. Read the repository if it helps.
+
+${opts.question.trim()}
+`);
+}
+
+async function consult(kind: "REVIEW" | "ASK", opts: ConsultOpts, prompt: string) {
+  const label = `LANE ${kind}` as const;
+  const depth = depthRefusal(label, opts.profile.limits.max_depth);
   if (depth) return depth;
   const risk = opts.risk ?? "normal";
   const fromChoice = opts.profile.review[opts.from];
@@ -375,24 +484,20 @@ export async function laneReview(opts: { from: Harness; to?: Harness; base: stri
   const entry = to === fromChoice.to ? fromChoice : review.find((r) => r.to === to) ?? { to };
   const { high, ...normal } = entry;
   const rc = risk === "high" && high ? { ...normal, ...high } : normal;
-  if (to === "grok" && !grokProfileInstalled()) return "LANE REVIEW\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n";
+  if (to === "grok" && !grokProfileInstalled()) return `${label}\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n`;
   const grokBin = to === "grok" ? pinnedGrok() : undefined;
-  if (grokBin === null) return "LANE REVIEW\nSTATUS: unavailable\nREASON: grok not found on PATH\n";
+  if (grokBin === null) return `${label}\nSTATUS: unavailable\nREASON: grok not found on PATH\n`;
   const sd = stateDir();
   const id = `${Date.now()}-${to}-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;
-  const slot = reserveSlot(sd, opts.profile.limits.max_concurrent, id);
-  if (slot === null) return `LANE REVIEW\nSTATUS: unavailable\nREASON: ${opts.profile.limits.max_concurrent} lanes already running\n`;
+  const budget = laneBudget(opts.profile.limits);
+  const slot = reserveSlot(sd, budget.budget, id);
+  if (slot === null) return `${label}\nSTATUS: unavailable\nREASON: lane budget ${budget.budget} (limited by ${budget.limitedBy}) already running\n`;
   try {
-    const dir = join(sd, "reviews", id);
+    const dir = join(sd, kind === "ASK" ? "asks" : "reviews", id);
     mkdirSync(dir, { recursive: true });
     chmodSync(dir, 0o700);
     const promptPath = join(dir, "prompt.txt");
-    writeFileSync(promptPath, `${REVIEW_PREAMBLE}Review the changes from ${opts.base} to the working tree of this repository (git diff ${opts.base}) against this goal:
-${opts.goal}
-
-Check that the change does what was asked, nothing missing, nothing unasked smuggled in, and name any risk.
-Answer under 300 words: first line "VERDICT: ship | fix-first | rethink", then numbered findings with file and fix.
-`);
+    writeFileSync(promptPath, prompt);
     const lastPath = join(dir, "last.txt");
     const logPath = join(dir, "worker.log");
     const call = workerArgv(to, rc, { cwd: opts.repo, promptPath, readOnly: true, lastMessagePath: lastPath, bin: grokBin });
@@ -402,7 +507,7 @@ Answer under 300 words: first line "VERDICT: ship | fix-first | rethink", then n
     });
     const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
     const { message, usage } = parseWorkerOutput(to, log, existsSync(lastPath) ? readFileSync(lastPath, "utf8") : "");
-    return bound(reviewReport({ to, model: rc.model, effort: rc.effort, risk, exitCode: run.code, timedOut: run.timedOut, usage, logPath, message }), opts.profile.limits.report_max_bytes);
+    return bound(reviewReport({ kind, to, model: rc.model, effort: rc.effort, risk, exitCode: run.code, timedOut: run.timedOut, usage, logPath, message }), opts.profile.limits.report_max_bytes);
   } finally {
     releaseSlot(sd, slot);
   }
@@ -418,7 +523,7 @@ export function listLanes(): LaneState[] {
 }
 
 // Removes only what a lane created, and only once nothing is lost: the branch
-// is merged into the repo HEAD, or the lane produced no change.
+// is integrated, its patch reverses cleanly from the repo tree, or it produced no change.
 export function laneGc(drop?: string): string[] {
   const out: string[] = [];
   // Pinned grok copies of older versions (about 300 MB each): keep the current one only.
@@ -449,7 +554,12 @@ export function laneGc(drop?: string): string[] {
     }
     const merged = git(s.repo, "merge-base", "--is-ancestor", s.branch, "HEAD").ok;
     const squashed = s.changed && git(s.repo, "diff", "--quiet", "HEAD", s.branch, "--").ok;
-    if (!(merged || squashed || !s.changed || s.id === drop)) {
+    const applied = s.status === "complete" && s.changed && s.id !== drop && !merged && !squashed
+      && spawnSync("sh", ["-c",
+        'git -C "$1" diff --binary --no-ext-diff --no-textconv "$2" "$3" | git -C "$1" apply --reverse --check',
+        "lane-gc", s.repo, s.base, s.branch,
+      ], { encoding: "utf8" }).status === 0;
+    if (!(merged || squashed || applied || !s.changed || s.id === drop)) {
       out.push(`kept ${s.id} (${s.status}, not integrated)`);
       continue;
     }
@@ -468,7 +578,7 @@ export function laneGc(drop?: string): string[] {
       continue;
     }
     rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
-    out.push(`removed ${s.id}`);
+    out.push(`removed ${s.id}${applied ? " (applied)" : ""}`);
   }
   return out;
 }
@@ -480,30 +590,39 @@ async function main() {
     options: {
       to: { type: "string" }, spec: { type: "string" }, effort: { type: "string" }, profile: { type: "string" },
       repo: { type: "string" }, channel: { type: "string" }, base: { type: "string" }, goal: { type: "string" },
-      from: { type: "string" }, drop: { type: "string" }, risk: { type: "string" },
+      from: { type: "string" }, drop: { type: "string" }, risk: { type: "string" }, file: { type: "string" },
     },
   });
   const profile = loadProfile(values.profile);
   const repo = resolve(values.repo ?? process.cwd());
   const isHarness = (h?: string): h is Harness => !!h && (HARNESSES as string[]).includes(h);
-  if (cmd === "run") {
+  if (cmd === "budget") {
+    const budget = laneBudget(profile.limits);
+    console.log(budget.budget);
+    console.log(`cpu ${budget.cpu} ram ${budget.ram} ceiling ${budget.ceiling} verify ${profile.limits.verify_concurrent}`);
+  } else if (cmd === "run") {
     if (!isHarness(values.to) || !values.spec) throw new Error("usage: lane run --to codex|grok|claude --spec <file>");
     const { report } = await laneRun({ to: values.to, specPath: values.spec, repo, profile, effort: values.effort, channel: values.channel });
     process.stdout.write(report);
-  } else if (cmd === "review") {
+  } else if (cmd === "review" || cmd === "ask") {
     const envHarness = process.env.ORCH_HARNESS;
     const from = isHarness(values.from) ? values.from : isHarness(envHarness) ? envHarness : "claude";
-    const usage = 'usage: lane review --base <ref> --goal "<goal>" [--risk normal|high] [--from h] [--to h]';
-    if (!values.base || !values.goal) throw new Error(usage);
+    const usage = cmd === "review"
+      ? 'usage: lane review --base <ref> --goal "<goal>" [--risk normal|high] [--from h] [--to h]'
+      : "usage: lane ask --file <question.md> [--risk normal|high] [--from h] [--to h]";
+    if (cmd === "review" ? !values.base || !values.goal : !values.file) throw new Error(usage);
     if (values.risk !== undefined && values.risk !== "normal" && values.risk !== "high") throw new Error(usage);
     const risk = values.risk === "high" ? "high" : "normal";
-    process.stdout.write(await laneReview({ from, to: isHarness(values.to) ? values.to : undefined, base: values.base, goal: values.goal, repo, profile, risk }));
+    const to = isHarness(values.to) ? values.to : undefined;
+    process.stdout.write(cmd === "review"
+      ? await laneReview({ from, to, base: values.base!, goal: values.goal!, repo, profile, risk })
+      : await laneAsk({ from, to, question: readFileSync(resolve(values.file!), "utf8"), repo, profile, risk }));
   } else if (cmd === "status") {
     for (const s of listLanes()) console.log(`${s.id}  ${s.status}  ${s.branch}  ${fmtUsage(s.usage)}`);
   } else if (cmd === "gc") {
     for (const line of laneGc(values.drop)) console.log(line);
   } else {
-    console.log("usage: lane run|review|status|gc");
+    console.log("usage: lane run|review|ask|budget|status|gc");
     process.exitCode = 2;
   }
 }

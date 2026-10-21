@@ -35,17 +35,19 @@ dépendance externe. Plan :
 | `lane run --to codex --spec f --channel headless` | Force le canal sans Orca |
 | `lane run --to codex --spec f --channel orca` | Demande le canal Orca ; repli headless si Orca ou son relais est indisponible |
 | `lane review --base <ref> --goal "..."` | Revue croisée lecture seule (sur risque) |
-| `lane status`, `lane gc` | Liste aussi les lanes en cours ; ferme les terminaux et retire les worktrees intégrés ou vides via leur propriétaire |
+| `lane status`, `lane gc` | Liste aussi les lanes en cours ; supprime les branches intégrées ou vides et termine les nettoyages Orca restés en attente |
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
 | `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |
-| `orch mem add\|search\|recent\|show` | Mémoire du lead : notes Markdown, rappel à la demande |
+| `orch mem add\|search\|recent\|review\|show` | Mémoire du lead : notes Markdown, rappel à la demande ; `review` liste les notes proches |
 | `orch docs update\|status\|search` | Corpus local de docs officielles, indexé par `ctx`, consulté à la demande |
 | `make check` | Typecheck, tests, matrice d'équivalence niveaux 0 à 2 |
 | `make smoke` | Lanes réelles vers codex, grok et claude : tâche complète + sondes de confinement (écriture `$HOME`, réseau, lane imbriquée) + décisions de la règle du lead Codex. Payant (~450k tokens, surtout en cache) : à lancer après tout changement de la façon dont les workers démarrent |
 | `scripts/orca-run-teardown.sh --run <id> --into <ref>` | Ferme un Run Orca intégré : worktrees, terminaux, branches fusionnées |
 
-Le terminal Orca observe la lane et affiche `working`, puis `done` et son
-rapport ; ce n'est pas une session interactive du worker. Le worker conserve
+Le terminal Orca observe la lane et affiche `working` ; ce n'est pas une
+session interactive du worker. Une lane terminée est coupée aussitôt : son
+worktree propre et ses terminaux Orca sont retirés, seule sa branche reste
+jusqu'à l'intégration. Un worktree sale (commit refusé) reste pour `lane gc`. Le worker conserve
 son environnement filtré, ses sandboxes et son timeout headless. Aucun Run
 d'orchestration ni message `worker_done` n'est nécessaire. Une création dont
 la réponse est perdue est recherchée par son nom unique ; si son résultat
@@ -100,3 +102,12 @@ session, date) :
 Les workers de `lane` ne peuvent pas écrire (`ORCH_LANE=1`). Rien n'est
 injecté au lancement : le lead cherche (`search`, `recent`) quand il en a
 besoin, ce qui garde son prompt en cache.
+
+`orch mem review` liste après coup les paires de notes actives proches
+(similarité lexicale, sans modèle) ; le lead oublie la note périmée ou laisse
+deux faits différents. Rien n'est fusionné ni supprimé automatiquement. Un
+contrôle bloquant à l'écriture a été mesuré le 2026-10-21 (A/B réel, 3
+harness) : aucun doublon évité, 11 à 74 % de tokens en plus par session
+d'écriture ; il a été retiré. `bun scripts/mem-dedup-replay.ts` rejoue la
+détection en lecture seule sur les vraies notes ; le corpus étiqueté de
+`tests/fixtures/mem-dedup/` en fixe le rappel dans `make check`.

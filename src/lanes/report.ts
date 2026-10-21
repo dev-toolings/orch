@@ -1,5 +1,5 @@
-import type { Harness } from "./profile.ts";
-import type { Status, Usage } from "./harness.ts";
+import type { Harness } from "../core/profile.ts";
+import type { Status, Usage } from "../harness/harness.ts";
 
 export interface LaneReportFields {
   to: Harness;
@@ -18,11 +18,13 @@ export interface LaneReportFields {
   verifyOut: string;
   message: string;
   usage: Usage;
+  peakRssMb?: { worker?: number; verify?: number };
   changed: boolean;
   logPath: string;
 }
 
 export interface ReviewReportFields {
+  kind?: "REVIEW" | "ASK";
   to: Harness;
   model?: string | null;
   effort?: string;
@@ -40,6 +42,10 @@ export function fmtUsage(u: Usage): string {
 }
 
 export function laneReport(f: LaneReportFields): string {
+  const peak = [
+    f.peakRssMb?.worker === undefined ? "" : `worker ${f.peakRssMb.worker} MB`,
+    f.peakRssMb?.verify === undefined ? "" : `verify ${f.peakRssMb.verify} MB`,
+  ].filter(Boolean);
   return [
     "LANE REPORT",
     `LANE: ${f.to} · ${f.model} · effort ${f.effort} · ${f.channel}`,
@@ -52,6 +58,7 @@ export function laneReport(f: LaneReportFields): string {
     f.setupLine,
     `CHANGES:\n${f.stat}`,
     `VERIFY: ${f.verifyOut}`,
+    peak.length ? `PEAK RSS: ${peak.join(", ")}` : "",
     `WORKER SAID: ${f.message.replace(/\s+/g, " ").trim().slice(0, 400) || "(nothing)"}`,
     `USAGE: ${fmtUsage(f.usage)}`,
     f.changed && f.status === "complete"
@@ -64,6 +71,6 @@ export function laneReport(f: LaneReportFields): string {
 }
 
 export function reviewReport(f: ReviewReportFields): string {
-  const head = `REVIEW REPORT\nREVIEWER: ${f.to} · ${f.model ?? "inherited"} · effort ${f.effort ?? "default"} · risk ${f.risk}\nEXIT: ${f.exitCode}${f.timedOut ? " (timeout)" : ""}\nUSAGE: ${fmtUsage(f.usage)}\nLOG: ${f.logPath}\n`;
+  const head = `${f.kind ?? "REVIEW"} REPORT\nREVIEWER: ${f.to} · ${f.model ?? "inherited"} · effort ${f.effort ?? "default"} · risk ${f.risk}\nEXIT: ${f.exitCode}${f.timedOut ? " (timeout)" : ""}\nUSAGE: ${fmtUsage(f.usage)}\nLOG: ${f.logPath}\n`;
   return `${head}${f.message.trim()}\n`;
 }
