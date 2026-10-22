@@ -16,8 +16,8 @@ import { runLogged, workerEnv } from "./harness/proc.ts";
 import { fmtUsage, laneReport, reviewReport } from "./lanes/report.ts";
 import { releaseSlot, reserveSlot } from "./lanes/slots.ts";
 import { laneBudget, type MachineFigures } from "./lanes/budget.ts";
-import { missingFields, parseSpec, type Spec } from "./lanes/spec.ts";
-import { appendLedger, readLedger, type Outcome } from "./lanes/ledger.ts";
+import { EFFORTS, missingFields, parseSpec, type Spec } from "./lanes/spec.ts";
+import { appendLedger, lastVerdict, parseVerdict, readLedger, type Outcome, type Verdict } from "./lanes/ledger.ts";
 import { inScope, type Risk, routeReport, routeSpec, specFeatures } from "./lanes/route.ts";
 import { statusEntries, workerBase } from "./lanes/worktree.ts";
 
@@ -215,6 +215,7 @@ export interface LaneState {
   declared?: string[];
   risk?: Risk[];
   touched?: string[];
+  objective?: string;
 }
 
 function depthRefusal(label: "LANE REPORT" | "LANE REVIEW" | "LANE ASK", maxDepth: number): string | null {
@@ -261,6 +262,7 @@ export async function laneRun(opts: {
   repo: string;
   profile: Profile;
   effort?: string;
+  model?: string;
   channel?: string;
   machine?: MachineFigures;
 }): Promise<{ report: string; state?: LaneState }> {
@@ -391,7 +393,7 @@ export async function laneRun(opts: {
     writeFileSync(promptPath, PREAMBLE + spec.raw);
     const lastPath = join(dir, "last.txt");
     const logPath = join(dir, "worker.log");
-    const choice = p.lanes[opts.to];
+    const choice = { ...p.lanes[opts.to], ...(opts.model ? { model: opts.model } : {}) };
     const call = workerArgv(opts.to, choice, {
       cwd: wt, promptPath, effort: opts.effort ?? spec.reasoning, readOnly: false, lastMessagePath: lastPath, bin: grokBin,
     });
@@ -465,7 +467,7 @@ export async function laneRun(opts: {
       id, to: opts.to, repo, base, branch, worktree: wt, status, changed, usage, started, ended: new Date().toISOString(),
       reason, session: process.env.ORCH_SESSION, channel: live.channel, orca: live.orca,
       ...(Object.keys(peakRssMb).length ? { peakRssMb } : {}),
-      verifyOk, declared: features.files, risk: features.risk, touched: diff.files,
+      verifyOk, declared: features.files, risk: features.risk, touched: diff.files, objective: (spec.fields.OBJECTIVE ?? "").trim().slice(0, 2000),
     };
     appendLedger({
       kind: "run", id, at: state.ended, repo: basename(repo), to: opts.to, model, effort, channel, status, changed, verifyOk,
@@ -490,7 +492,7 @@ export async function laneRun(opts: {
   }
 }
 
-type ConsultOpts = { from: Harness; to?: HarnessId; repo: string; profile: Profile; risk?: "normal" | "high"; base?: string };
+type ConsultOpts = { from: Harness; to?: HarnessId; repo: string; profile: Profile; risk?: "normal" | "high"; base?: string; model?: string; effort?: string };
 
 function installedReviewers(which?: Which): HarnessId[] {
   return HARNESS_IDS.filter((h) => installed(h, which));
@@ -573,7 +575,9 @@ async function consult(kind: "REVIEW" | "ASK", opts: ConsultOpts, prompt: string
   const risk = opts.risk ?? "normal";
   const resolution = resolveReviewer(opts.from, opts.profile, { to: opts.to, risk });
   if ("unavailable" in resolution) return `${label}\nSTATUS: unavailable\nREASON: ${resolution.unavailable}\n`;
-  const { to, choice: rc, note } = resolution;
+  // --model and --effort override the profile's reviewer choice for this call only.
+  const { to, note } = resolution;
+  const rc = { ...resolution.choice, ...(opts.model ? { model: opts.model } : {}), ...(opts.effort ? { effort: opts.effort } : {}) };
   if (to === "grok" && !grokProfileInstalled()) return `${label}\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n`;
   const grokBin = to === "grok" ? pinnedGrok() : undefined;
   if (grokBin === null) return `${label}\nSTATUS: unavailable\nREASON: grok not found on PATH\n`;
@@ -777,12 +781,13 @@ export interface IntegrateResult { report: string; integrated: boolean }
 // tree only when VERIFY passed, every touched file is in the spec's FILES,
 // a risky spec was reviewed, and the repo is on a feature branch. Otherwise
 // nothing moves and the report names each reason.
-export async function laneIntegrate(id: string, opts: { reviewed?: boolean } = {}): Promise<IntegrateResult> {
-  const refused = (why: string[]) => ({
-    report: `LANE INTEGRATE\nSTATUS: refused\nID: ${id}\n${why.map((w) => `GATE: ${w}`).join("\n")}\n`, integrated: false,
-  });
+export async function laneIntegrate(id: string): Promise<IntegrateResult> {
+  const refused = (why: string[], log = true) => {
+    if (log) appendLedger({ kind: "gate", id, at: new Date().toISOString(), reasons: why });
+    return { report: `LANE INTEGRATE\nSTATUS: refused\nID: ${id}\n${why.map((w) => `GATE: ${w}`).join("\n")}\n`, integrated: false };
+  };
   const s = listLanes().find((l) => l.id === id);
-  if (!s) return refused(["no lane record with this id (lane status lists them)"]);
+  if (!s) return refused(["no lane record with this id (lane status lists them)"], false);
   const why: string[] = [];
   if (s.status !== "complete") why.push(`status ${s.status}, not complete`);
   if (!s.changed) why.push("no change to integrate");
@@ -795,8 +800,11 @@ export async function laneIntegrate(id: string, opts: { reviewed?: boolean } = {
     const outside = touched.filter((f) => !inScope(f, s.declared!));
     if (outside.length) why.push(`${outside.length} file(s) outside FILES: ${outside.slice(0, 8).join(", ")}`);
   }
-  if (s.risk?.length && !opts.reviewed) {
-    why.push(`risk ${s.risk.join(", ")}: run lane review --base ${s.base} --goal "<goal>" --risk high on the branch, then lane integrate ${id} --reviewed`);
+  // A risky lane needs a recorded review whose last verdict is ship: an
+  // assertion from the caller is not evidence.
+  if (s.risk?.length) {
+    const verdict = lastVerdict(readLedger(), id);
+    if (verdict !== "ship") why.push(`risk ${s.risk.join(", ")}: ${verdict ? `last review says ${verdict}` : "no review yet"}; lane review --lane ${id} records one`);
   }
   const branch = git(s.repo, "branch", "--show-current").out;
   if (!branch) why.push("caller repo is on a detached HEAD");
@@ -822,6 +830,30 @@ export async function laneIntegrate(id: string, opts: { reviewed?: boolean } = {
   };
 }
 
+// Review a lane branch in a throwaway detached checkout (the lane's own
+// worktree is already cut), then record the verdict for the gate.
+export async function laneReviewLane(id: string, opts: { from: Harness; to?: HarnessId; profile: Profile; risk?: "normal" | "high"; goal?: string; model?: string; effort?: string }): Promise<{ report: string; verdict: Verdict }> {
+  const s = listLanes().find((l) => l.id === id);
+  if (!s) return { report: `LANE REVIEW\nSTATUS: refused-by-lane\nREASON: no lane record ${id}\n`, verdict: "unknown" };
+  const wt = join(stateDir(), "lanes", id, "review-wt");
+  if (existsSync(wt)) git(s.repo, "worktree", "remove", "--force", wt);
+  if (!git(s.repo, "worktree", "add", "-q", "--detach", wt, s.branch).ok) {
+    return { report: `LANE REVIEW\nSTATUS: unavailable\nREASON: cannot check out ${s.branch}\n`, verdict: "unknown" };
+  }
+  try {
+    const report = await laneReview({
+      from: opts.from, to: opts.to, base: s.base, goal: opts.goal ?? s.objective ?? `lane ${id}`, repo: wt, profile: opts.profile,
+      risk: opts.risk ?? (s.risk?.length ? "high" : "normal"), model: opts.model, effort: opts.effort,
+    });
+    const verdict = parseVerdict(report);
+    const who = /^REVIEWER: (\S+) · (\S+) · effort (\S+)/m.exec(report);
+    if (who) appendLedger({ kind: "review", id, at: new Date().toISOString(), to: who[1], model: who[2], effort: who[3], verdict });
+    return { report, verdict };
+  } finally {
+    git(s.repo, "worktree", "remove", "--force", wt);
+  }
+}
+
 function installedLaneHarnesses(): HarnessId[] {
   return HARNESS_IDS.filter((h) => (HARNESSES as string[]).includes(h) && installed(h));
 }
@@ -829,22 +861,29 @@ function installedLaneHarnesses(): HarnessId[] {
 export function laneRoute(opts: { specPath: string; profile: Profile; to?: HarnessId; installed?: HarnessId[] }) {
   const spec = parseSpec(readFileSync(opts.specPath, "utf8"));
   const features = specFeatures(spec);
-  const route = routeSpec(features, readLedger(), { installed: opts.installed ?? installedLaneHarnesses(), config: opts.profile.route, to: opts.to });
+  const efforts = Object.fromEntries(HARNESSES.map((h) => [h, opts.profile.lanes[h]?.effort]));
+  const route = routeSpec(features, readLedger(), { installed: opts.installed ?? installedLaneHarnesses(), config: opts.profile.route, to: opts.to, efforts });
   return { spec, features, route, report: routeReport(route, features) };
 }
 
 // route, run, gate: one spec end to end. It stops at the first step that
 // needs a human or the lead: an inline-sized spec, a lane that is not
 // complete, or a gate refusal (risk, scope, VERIFY, default branch).
-export async function laneAuto(opts: { specPath: string; repo: string; profile: Profile; to?: HarnessId; effort?: string; channel?: string }): Promise<{ report: string; integrated: boolean }> {
+export async function laneAuto(opts: { specPath: string; repo: string; profile: Profile; to?: HarnessId; effort?: string; model?: string; channel?: string; from?: Harness }): Promise<{ report: string; integrated: boolean }> {
   const depth = depthRefusal("LANE REPORT", opts.profile.limits.max_depth);
   if (depth) return { report: depth, integrated: false };
   const r = laneRoute({ specPath: opts.specPath, profile: opts.profile, to: opts.to });
   if (r.route.action === "self") return { report: `${r.report}STATUS: self (nothing run: do it inline, or pass --to to force a lane)\n`, integrated: false };
   if (!r.route.to) return { report: `${r.report}STATUS: unavailable\n`, integrated: false };
-  const run = await laneRun({ to: r.route.to, specPath: opts.specPath, repo: opts.repo, profile: opts.profile, effort: opts.effort, channel: opts.channel });
+  // An explicit --effort wins over the route's, which already honours REASONING.
+  const run = await laneRun({ to: r.route.to, specPath: opts.specPath, repo: opts.repo, profile: opts.profile,
+    effort: opts.effort ?? r.route.effort, model: opts.model, channel: opts.channel });
   let report = r.report + run.report;
   if (run.state?.status !== "complete" || !run.state.changed) return { report, integrated: false };
+  if (run.state.risk?.length) {
+    const review = await laneReviewLane(run.state.id, { from: opts.from ?? "claude", profile: opts.profile, risk: "high" });
+    report += review.report;
+  }
   const gate = await laneIntegrate(run.state.id);
   report += gate.report;
   return { report, integrated: gate.integrated };
@@ -856,7 +895,7 @@ async function main() {
     args: rest,
     allowPositionals: true,
     options: {
-      reviewed: { type: "boolean" },
+      model: { type: "string" }, lane: { type: "string" },
       to: { type: "string" }, spec: { type: "string" }, effort: { type: "string" }, profile: { type: "string" },
       repo: { type: "string" }, channel: { type: "string" }, base: { type: "string" }, goal: { type: "string" },
       from: { type: "string" }, drop: { type: "string" }, risk: { type: "string" }, file: { type: "string" },
@@ -866,41 +905,46 @@ async function main() {
   const repo = resolve(values.repo ?? process.cwd());
   const isHarness = (h?: string): h is Harness => !!h && (HARNESSES as string[]).includes(h);
   const isHarnessId = (h?: string): h is HarnessId => !!h && (HARNESS_IDS as string[]).includes(h);
+  const leadHarness = (h?: string): Harness => isHarness(h) ? h : isHarness(process.env.ORCH_HARNESS) ? process.env.ORCH_HARNESS : "claude";
+  if (values.effort !== undefined && !EFFORTS.has(values.effort)) throw new Error(`--effort must be one of ${[...EFFORTS].join(", ")}`);
   if (cmd === "budget") {
     const budget = laneBudget(profile.limits);
     console.log(budget.budget);
     console.log(`cpu ${budget.cpu} ram ${budget.ram} ceiling ${budget.ceiling} verify ${profile.limits.verify_concurrent}`);
   } else if (cmd === "run") {
     if (!isHarnessId(values.to) || !values.spec) throw new Error("usage: lane run --to claude|codex|grok --spec <file>");
-    const { report } = await laneRun({ to: values.to, specPath: values.spec, repo, profile, effort: values.effort, channel: values.channel });
+    const { report } = await laneRun({ to: values.to, specPath: values.spec, repo, profile, effort: values.effort, model: values.model, channel: values.channel });
     process.stdout.write(report);
   } else if (cmd === "route") {
     if (!values.spec) throw new Error("usage: lane route --spec <file> [--to h]");
     process.stdout.write(laneRoute({ specPath: values.spec, profile, to: isHarnessId(values.to) ? values.to : undefined }).report);
   } else if (cmd === "auto") {
     if (!values.spec) throw new Error("usage: lane auto --spec <file> [--to h] [--effort e] [--channel headless|orca]");
-    const { report, integrated } = await laneAuto({ specPath: values.spec, repo, profile, to: isHarnessId(values.to) ? values.to : undefined, effort: values.effort, channel: values.channel });
+    const { report, integrated } = await laneAuto({ specPath: values.spec, repo, profile, to: isHarnessId(values.to) ? values.to : undefined,
+      effort: values.effort, model: values.model, channel: values.channel, from: leadHarness() });
     process.stdout.write(report);
     if (!integrated) process.exitCode = 3;
   } else if (cmd === "integrate") {
     const id = positionals[0];
-    if (!id) throw new Error("usage: lane integrate <id> [--reviewed]");
-    const { report, integrated } = await laneIntegrate(id, { reviewed: values.reviewed });
+    if (!id) throw new Error("usage: lane integrate <id>");
+    const { report, integrated } = await laneIntegrate(id);
     process.stdout.write(report);
     if (!integrated) process.exitCode = 3;
   } else if (cmd === "review" || cmd === "ask") {
-    const envHarness = process.env.ORCH_HARNESS;
-    const from = isHarness(values.from) ? values.from : isHarness(envHarness) ? envHarness : "claude";
+    const from = leadHarness(values.from);
     const usage = cmd === "review"
-      ? 'usage: lane review --base <ref> --goal "<goal>" [--risk normal|high] [--from h] [--to h]'
-      : "usage: lane ask --file <question.md> [--risk normal|high] [--from h] [--to h]";
-    if (cmd === "review" ? !values.base || !values.goal : !values.file) throw new Error(usage);
+      ? 'usage: lane review --base <ref> --goal "<goal>" | --lane <id> [--goal g] [--risk normal|high] [--from h] [--to h] [--model m] [--effort e]'
+      : "usage: lane ask --file <question.md> [--risk normal|high] [--from h] [--to h] [--model m] [--effort e]";
+    if (cmd === "review" ? !values.lane && (!values.base || !values.goal) : !values.file) throw new Error(usage);
     if (values.risk !== undefined && values.risk !== "normal" && values.risk !== "high") throw new Error(usage);
-    const risk = values.risk === "high" ? "high" : "normal";
+    const risk = values.risk === undefined ? undefined : values.risk === "high" ? "high" : "normal";
     const to = isHarnessId(values.to) ? values.to : undefined;
-    process.stdout.write(cmd === "review"
-      ? await laneReview({ from, to, base: values.base!, goal: values.goal!, repo, profile, risk })
-      : await laneAsk({ from, to, question: readFileSync(resolve(values.file!), "utf8"), repo, profile, risk }));
+    const pin = { model: values.model, effort: values.effort };
+    process.stdout.write(cmd === "ask"
+      ? await laneAsk({ from, to, question: readFileSync(resolve(values.file!), "utf8"), repo, profile, risk, ...pin })
+      : values.lane
+        ? (await laneReviewLane(values.lane, { from, to, profile, risk, goal: values.goal, ...pin })).report
+        : await laneReview({ from, to, base: values.base!, goal: values.goal!, repo, profile, risk, ...pin }));
   } else if (cmd === "status") {
     for (const s of listLanes()) console.log(`${s.id}  ${s.status}  ${s.branch}  ${fmtUsage(s.usage)}`);
     for (const o of listOrphans()) {

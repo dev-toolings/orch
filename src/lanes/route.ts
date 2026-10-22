@@ -2,6 +2,8 @@
 // and whether its integration needs a review, from the spec's own features and
 // the lane ledger. Deterministic, no model call: the same inputs give the same
 // route, and every choice carries its reason.
+import { createHash } from "node:crypto";
+import type { Usage } from "../harness/harness.ts";
 import type { HarnessId } from "../harness/registry.ts";
 import { type LedgerRow, verdicts } from "./ledger.ts";
 import type { Spec } from "./spec.ts";
@@ -14,6 +16,12 @@ export interface SpecFeatures {
   stacks: string[];
   risk: Risk[];
   objective: string;
+  // Same OBJECTIVE and FILES give the same fingerprint: a retry of a spec
+  // that already failed is recognised and gets more effort, not less.
+  fingerprint?: string;
+  // The lead's own `MECHANICAL: yes`: file count alone is weak evidence.
+  mechanical?: boolean;
+  reasoning?: string;
 }
 
 export interface RouteConfig {
@@ -24,9 +32,30 @@ export interface RouteConfig {
   self_max_files: number;
   // Closed runs a harness needs on a stack before its record outranks the order.
   min_samples: number;
+  // A MECHANICAL spec without risk, on one code stack and at most this many
+  // files, runs at medium (never above the profile's own effort).
+  medium_max_files: number;
+  // Cost-aware choice: closed runs, share of them with token usage, and the
+  // 90% lower confidence bound on success a harness needs to compete on cost.
+  cost_min_samples: number;
+  cost_floor: number;
 }
 
-export const DEFAULT_ROUTE: RouteConfig = { order: ["codex", "claude", "grok"], self_max_files: 2, min_samples: 5 };
+export const DEFAULT_ROUTE: RouteConfig = {
+  order: ["codex", "claude", "grok"], self_max_files: 2, min_samples: 5, medium_max_files: 4, cost_min_samples: 10, cost_floor: 0.7,
+};
+
+const EFFORT_RANK = ["low", "medium", "high", "xhigh", "max"];
+const rank = (e?: string) => (e ? EFFORT_RANK.indexOf(e) : -1);
+// Stacks that only accompany code (docs, config, Makefile) do not make a change multi-stack.
+const SUPPORT_STACKS = new Set(["docs", "config", "make"]);
+
+export function tokensOf(u: Usage | undefined): number | undefined {
+  if (!u) return undefined;
+  if (typeof u.total === "number" && u.total > 0) return u.total;
+  const sum = (u.input ?? 0) + (u.output ?? 0);
+  return sum > 0 ? sum : undefined;
+}
 
 const STACKS: [RegExp, string][] = [
   [/\.(ts|tsx|mts|cts)$/, "typescript"], [/\.(js|jsx|mjs|cjs)$/, "javascript"], [/\.py$/, "python"],
@@ -64,7 +93,11 @@ export function specFeatures(spec: Spec): SpecFeatures {
   for (const word of (spec.fields.RISK ?? "").toLowerCase().split(/[\s,]+/)) {
     if ((RISKS as string[]).includes(word)) risk.add(word as Risk);
   }
-  return { files, stacks, risk: RISKS.filter((r) => risk.has(r)), objective: (spec.fields.OBJECTIVE ?? "").split("\n")[0].slice(0, 120) };
+  const fingerprint = createHash("sha256").update(`${(spec.fields.OBJECTIVE ?? "").replace(/\s+/g, " ").trim()}\n${[...files].sort().join("\n")}`).digest("hex").slice(0, 16);
+  return {
+    files, stacks, risk: RISKS.filter((r) => risk.has(r)), objective: (spec.fields.OBJECTIVE ?? "").split("\n")[0].slice(0, 120),
+    fingerprint, mechanical: /^(yes|true|oui)\b/i.test(spec.fields.MECHANICAL ?? ""), ...(spec.reasoning ? { reasoning: spec.reasoning } : {}),
+  };
 }
 
 // A declared entry ending in `/` covers its directory; `*` matches inside one
@@ -78,28 +111,69 @@ export function inScope(file: string, declared: string[]): boolean {
   });
 }
 
-export interface HarnessStats { to: HarnessId; n: number; ok: number; score: number; scope: "stack" | "all" }
+export interface HarnessStats { to: HarnessId; n: number; ok: number; score: number; scope: "stack" | "all"; tokens?: number; usageShare: number; lower: number }
 
-// Laplace-smoothed success rate: 0 runs reads 0.5, never 0 or 1.
+// Wilson lower bound at 90% (z = 1.645): a success rate the record supports.
+export function wilsonLower(ok: number, n: number, z = 1.645): number {
+  if (!n) return 0;
+  const p = ok / n;
+  const d = 1 + (z * z) / n;
+  return (p + (z * z) / (2 * n) - z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / d;
+}
+
+// Comparable history covers every requested stack: a TypeScript-only record
+// says nothing about a TypeScript and SQL change. score is Laplace-smoothed
+// (0 runs reads 0.5); tokens is the mean per attempt, failures included.
 export function harnessStats(rows: LedgerRow[], to: HarnessId, stacks: string[]): HarnessStats {
   const mine = verdicts(rows).filter((v) => v.run.to === to);
-  const onStack = mine.filter((v) => v.run.features?.stacks?.some((s) => stacks.includes(s)));
-  const scope = stacks.length && onStack.length ? "stack" : "all";
-  const pool = scope === "stack" ? onStack : mine;
+  const pool = stacks.length ? mine.filter((v) => stacks.every((s) => v.run.features?.stacks?.includes(s))) : mine;
   const ok = pool.filter((v) => v.ok).length;
-  return { to, n: pool.length, ok, score: (ok + 1) / (pool.length + 2), scope };
+  const spent = pool.map((v) => tokensOf(v.run.usage)).filter((t): t is number => t !== undefined);
+  return {
+    to, n: pool.length, ok, score: (ok + 1) / (pool.length + 2), scope: stacks.length ? "stack" : "all",
+    ...(spent.length ? { tokens: Math.round(spent.reduce((a, b) => a + b, 0) / spent.length) } : {}),
+    usageShare: pool.length ? spent.length / pool.length : 0, lower: wilsonLower(ok, pool.length),
+  };
+}
+
+// Effort: spec REASONING wins. A risky spec, or a retry of a spec that already
+// failed, runs at high at least. A MECHANICAL spec without risk, on one code
+// stack and few files, runs at medium. Everything else keeps the profile's.
+export function routeEffort(f: SpecFeatures, rows: LedgerRow[], profileEffort: string | undefined, cfg: RouteConfig): { effort?: string; why: string } {
+  if (f.reasoning) return { effort: f.reasoning, why: "spec REASONING" };
+  const atLeastHigh = rank(profileEffort) >= rank("high") ? profileEffort : "high";
+  if (f.risk.length) return { effort: atLeastHigh, why: `risk ${f.risk.join(", ")}: effort ${atLeastHigh} at least` };
+  const failedBefore = f.fingerprint && verdicts(rows).some((v) => !v.ok && v.run.features?.fingerprint === f.fingerprint);
+  if (failedBefore) return { effort: atLeastHigh, why: `this spec already failed once: effort ${atLeastHigh} at least` };
+  const codeStacks = f.stacks.filter((s) => !SUPPORT_STACKS.has(s));
+  if (f.mechanical && f.files.length <= cfg.medium_max_files && codeStacks.length <= 1) {
+    const effort = profileEffort && rank(profileEffort) < rank("medium") ? profileEffort : "medium";
+    return { effort, why: `MECHANICAL, no risk, ${f.files.length} file(s), ${codeStacks.length || "no"} code stack: effort ${effort}` };
+  }
+  return { effort: profileEffort, why: `profile effort ${profileEffort ?? "default"}${f.mechanical ? "" : " (spec not marked MECHANICAL)"}` };
 }
 
 export interface Route {
   action: "self" | "lane";
   to?: HarnessId;
+  effort?: string;
   review: "none" | "high";
   reasons: string[];
   stats: HarnessStats[];
 }
 
-export function routeSpec(features: SpecFeatures, rows: LedgerRow[], opts: { installed: HarnessId[]; config?: Partial<RouteConfig>; to?: HarnessId }): Route {
+export function routeSpec(
+  features: SpecFeatures, rows: LedgerRow[],
+  opts: { installed: HarnessId[]; config?: Partial<RouteConfig>; to?: HarnessId; efforts?: Partial<Record<HarnessId, string>> },
+): Route {
   const cfg = { ...DEFAULT_ROUTE, ...opts.config };
+  const r = pickHarness(features, rows, opts, cfg);
+  if (r.action !== "lane" || !r.to) return r;
+  const e = routeEffort(features, rows, opts.efforts?.[r.to], cfg);
+  return { ...r, ...(e.effort ? { effort: e.effort } : {}), reasons: [...r.reasons, e.why] };
+}
+
+function pickHarness(features: SpecFeatures, rows: LedgerRow[], opts: { installed: HarnessId[]; to?: HarnessId }, cfg: RouteConfig): Route {
   const review = features.risk.length ? "high" : "none";
   const reasons: string[] = [];
   if (review === "high") reasons.push(`risk ${features.risk.join(", ")}: integration needs lane review --risk high first`);
@@ -113,10 +187,18 @@ export function routeSpec(features: SpecFeatures, rows: LedgerRow[], opts: { ins
     return { action: "self", review, reasons: [`${features.files.length} declared file(s) <= ${cfg.self_max_files}: do it yourself, a worker costs ~10k tokens of prefix`, ...reasons], stats };
   }
   if (!eligible.length) return { action: "lane", to: undefined, review, reasons: ["no lane harness installed", ...reasons], stats };
+  // Cost first, but only among harnesses whose record is long, metered and
+  // reliable enough: a cheap but flaky harness never qualifies.
+  const reliable = stats.filter((s) => s.n >= cfg.cost_min_samples && s.usageShare >= 0.9 && s.tokens !== undefined && s.lower >= cfg.cost_floor);
+  if (reliable.length) {
+    const cheapest = [...reliable].sort((a, b) => a.tokens! / a.score - b.tokens! / b.score)[0];
+    reasons.unshift(`${cheapest.to}: ${Math.round(cheapest.tokens! / cheapest.score)} tokens per integrated lane, ${cheapest.ok}/${cheapest.n} integrated (lower bound ${cheapest.lower.toFixed(2)})`);
+    return { action: "lane", to: cheapest.to, review, reasons, stats };
+  }
   const measured = stats.filter((s) => s.n >= cfg.min_samples).sort((a, b) => b.score - a.score);
   const best = measured[0];
   if (best && best.score >= 0.5) {
-    reasons.unshift(`${best.to}: ${best.ok}/${best.n} integrated on ${best.scope === "stack" ? features.stacks.join(", ") : "all stacks"} (score ${best.score.toFixed(2)})`);
+    reasons.unshift(`${best.to}: ${best.ok}/${best.n} integrated on ${best.scope === "stack" ? features.stacks.join(" + ") : "all stacks"} (score ${best.score.toFixed(2)})`);
     return { action: "lane", to: best.to, review, reasons, stats };
   }
   // No harness has a good enough record yet: keep the configured order, but
@@ -132,10 +214,10 @@ export function routeSpec(features: SpecFeatures, rows: LedgerRow[], opts: { ins
 export function routeReport(r: Route, features: SpecFeatures): string {
   return [
     "LANE ROUTE",
-    `ACTION: ${r.action}${r.to ? ` --to ${r.to}` : ""}`,
+    `ACTION: ${r.action}${r.to ? ` --to ${r.to}` : ""}${r.effort ? ` --effort ${r.effort}` : ""}`,
     `REVIEW: ${r.review}`,
     `FILES: ${features.files.length} (${features.stacks.join(", ") || "no stack"})${features.risk.length ? `; risk ${features.risk.join(", ")}` : ""}`,
     ...r.reasons.map((x) => `WHY: ${x}`),
-    r.stats.length ? `RECORD: ${r.stats.map((s) => `${s.to} ${s.ok}/${s.n}`).join(", ")}` : "",
+    r.stats.length ? `RECORD: ${r.stats.map((s) => `${s.to} ${s.ok}/${s.n}${s.tokens ? ` ~${s.tokens} tok` : ""}`).join(", ")}` : "",
   ].filter(Boolean).join("\n") + "\n";
 }

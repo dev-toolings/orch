@@ -36,7 +36,16 @@ export interface OutcomeRecord {
   by: "integrate" | "gc";
 }
 
-export type LedgerRow = RunRecord | OutcomeRecord;
+// A gate refusal, kept as evidence (it prompts a spec or harness fix, it is
+// not a worker failure on its own).
+export interface GateRecord { kind: "gate"; id: string; at: string; reasons: string[] }
+
+// A review of a lane branch: the gate needs `ship` from one for a risky lane.
+export interface ReviewRecord { kind: "review"; id: string; at: string; to: string; model: string; effort: string; verdict: Verdict }
+export type Verdict = "ship" | "fix-first" | "rethink" | "unknown";
+
+export type LedgerRow = RunRecord | OutcomeRecord | GateRecord | ReviewRecord;
+const KINDS = new Set(["run", "outcome", "gate", "review"]);
 
 export const ledgerPath = (root = stateDir()) => join(root, "lanes.jsonl");
 
@@ -54,7 +63,7 @@ export function readLedger(root = stateDir()): LedgerRow[] {
     if (!line.trim()) return [];
     try {
       const row = JSON.parse(line) as LedgerRow;
-      return row && (row.kind === "run" || row.kind === "outcome") && typeof row.id === "string" ? [row] : [];
+      return row && KINDS.has(row.kind) && typeof row.id === "string" ? [row] : [];
     } catch { return []; }
   });
 }
@@ -72,4 +81,16 @@ export function verdicts(rows: LedgerRow[]): { run: RunRecord; ok: boolean }[] {
     if (o === "dropped" || ["failed", "refused", "timeout"].includes(r.status)) return [{ run: r, ok: false }];
     return [];
   });
+}
+
+// The last review of a lane decides: a later fix-first overrides an earlier ship.
+export function lastVerdict(rows: LedgerRow[], id: string): Verdict | undefined {
+  let v: Verdict | undefined;
+  for (const r of rows) if (r.kind === "review" && r.id === id) v = r.verdict;
+  return v;
+}
+
+export function parseVerdict(message: string): Verdict {
+  const m = /VERDICT:\s*(ship|fix-first|rethink)\b/i.exec(message);
+  return m ? (m[1].toLowerCase() as Verdict) : "unknown";
 }

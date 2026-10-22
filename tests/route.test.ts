@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { laneAuto, laneGc, laneIntegrate, laneRun, listLanes } from "../src/lane.ts";
-import { appendLedger, type LedgerRow, readLedger, type RunRecord } from "../src/lanes/ledger.ts";
-import { declaredFiles, inScope, routeSpec, specFeatures, type SpecFeatures } from "../src/lanes/route.ts";
+import { laneAuto, laneGc, laneIntegrate, laneReviewLane, laneRun, listLanes } from "../src/lane.ts";
+import { appendLedger, lastVerdict, type LedgerRow, readLedger, type RunRecord } from "../src/lanes/ledger.ts";
+import { declaredFiles, inScope, routeEffort, routeSpec, specFeatures, type SpecFeatures, DEFAULT_ROUTE } from "../src/lanes/route.ts";
 import { parseSpec } from "../src/lanes/spec.ts";
 import { loadProfile, type Profile } from "../src/core/profile.ts";
 
@@ -81,6 +81,47 @@ describe("routeSpec", () => {
     expect(r.to).toBe("claude");
   });
 
+  test("effort: MECHANICAL goes medium, risk and a failed retry go high, REASONING wins", () => {
+    const mech = { ...feat(three), mechanical: true, fingerprint: "f1" };
+    expect(routeEffort(mech, [], "xhigh", DEFAULT_ROUTE).effort).toBe("medium");
+    expect(routeEffort(mech, [], "low", DEFAULT_ROUTE).effort).toBe("low");
+    expect(routeEffort({ ...mech, mechanical: false }, [], "xhigh", DEFAULT_ROUTE).effort).toBe("xhigh");
+    expect(routeEffort({ ...mech, files: [...three, "src/c.ts", "src/d.ts"] }, [], "xhigh", DEFAULT_ROUTE).effort).toBe("xhigh");
+    expect(routeEffort({ ...mech, stacks: ["python", "typescript"] }, [], "xhigh", DEFAULT_ROUTE).effort).toBe("xhigh");
+    expect(routeEffort({ ...mech, stacks: ["docs", "typescript"] }, [], "xhigh", DEFAULT_ROUTE).effort).toBe("medium");
+    expect(routeEffort({ ...mech, risk: ["security"] }, [], "medium", DEFAULT_ROUTE).effort).toBe("high");
+    const failed = { ...run("x", "codex", "failed"), features: { ...run("x", "codex", "failed").features, fingerprint: "f1" } };
+    expect(routeEffort(mech, [failed], "medium", DEFAULT_ROUTE)).toMatchObject({ effort: "high" });
+    expect(routeEffort({ ...mech, reasoning: "max" }, [], "medium", DEFAULT_ROUTE).effort).toBe("max");
+    const r = routeSpec(mech, [], { installed: ["codex"], efforts: { codex: "xhigh" } });
+    expect(r).toMatchObject({ to: "codex", effort: "medium" });
+  });
+
+  test("specFeatures reads MECHANICAL and a stable fingerprint", () => {
+    const a = specFeatures(parseSpec("OBJECTIVE: do  it\nFILES: b.ts, a.ts\nMECHANICAL: yes"));
+    const b = specFeatures(parseSpec("OBJECTIVE: do it\nFILES: a.ts\nb.ts"));
+    expect(a.mechanical).toBe(true);
+    expect(b.mechanical).toBe(false);
+    expect(a.fingerprint).toBe(b.fingerprint!);
+  });
+
+  test("cost: the cheapest reliable harness wins; a cheap flaky one never qualifies", () => {
+    const priced = (to: string, ok: number, ko: number, tokens: number) => history(to, ok, ko).map((r) => r.kind === "run" ? { ...r, usage: { total: tokens } } : r);
+    const rows = [...priced("codex", 10, 0, 60000), ...priced("claude", 10, 0, 20000), ...priced("grok", 6, 4, 1000)];
+    const r = routeSpec(feat(three), rows, { installed: [...installed] });
+    expect(r.to).toBe("claude");
+    expect(r.reasons[0]).toMatch(/^claude: \d+ tokens per integrated lane, 10\/10 integrated/);
+    // Unmetered runs: no cost comparison, back to the success rule.
+    const unmetered = [...history("codex", 10, 0), ...history("claude", 10, 0)];
+    expect(routeSpec(feat(three), unmetered, { installed: [...installed] }).reasons[0]).toContain("integrated on typescript");
+  });
+
+  test("history must cover every requested stack", () => {
+    const r = routeSpec(feat(["db/q.sql", "src/a.ts", "src/b.ts"]), history("claude", 5, 0), { installed: [...installed] });
+    expect(r.stats.find((s) => s.to === "claude")?.n).toBe(0);
+    expect(r.to).toBe("codex");
+  });
+
   test("risk asks for a high review; --to overrides the size rule", () => {
     const r = routeSpec(feat(["src/auth.ts"], ["security"]), [], { installed: [...installed], to: "grok" });
     expect(r).toMatchObject({ action: "lane", to: "grok", review: "high" });
@@ -97,6 +138,8 @@ describe("ledger and integration gate", () => {
     writeFileSync(join(bin, "codex"), `#!/bin/sh\ncat >/dev/null 2>&1\n${body}\n`);
     chmodSync(join(bin, "codex"), 0o755);
   };
+  // Fake codex reviewer: writes its verdict where `-o` points, as codex does.
+  const reviewer = (verdict: string) => fake(`out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; printf 'VERDICT: ${verdict}\\n1. ok\\n' > "$out"`);
   const spec = (files: string, extra = "") => {
     const p = join(root, `spec-${Math.random().toString(36).slice(2)}.txt`);
     writeFileSync(p, `OBJECTIVE: write files\nFILES: ${files}\nINTERFACES: none\nCONSTRAINTS: none\nVERIFY: test -f a.txt\nACCEPT: a.txt exists\n${extra}`);
@@ -149,13 +192,24 @@ describe("ledger and integration gate", () => {
 
     fake("echo d > a.txt");
     const risky = await laneRun({ to: "codex", specPath: spec("a.txt", "RISK: security\n"), repo, profile });
-    expect((await laneIntegrate(risky.state!.id)).report).toContain("GATE: risk security: run lane review");
+    expect((await laneIntegrate(risky.state!.id)).report).toContain("GATE: risk security: no review yet; lane review --lane");
+    expect(readLedger().some((r) => r.kind === "gate" && r.id === risky.state!.id)).toBe(true);
+
+    // The reviewer's verdict is recorded, not asserted: fix-first keeps it out, ship lets it in.
+    reviewer("fix-first");
+    expect((await laneReviewLane(risky.state!.id, { from: "claude", profile })).verdict).toBe("fix-first");
+    expect((await laneIntegrate(risky.state!.id)).report).toContain("last review says fix-first");
+    reviewer("ship");
+    const review = await laneReviewLane(risky.state!.id, { from: "claude", profile, model: "pinned-model", effort: "low" });
+    expect(review.report).toContain("REVIEWER: codex · pinned-model · effort low · risk high");
+    expect(lastVerdict(readLedger(), risky.state!.id)).toBe("ship");
+    expect(sh(repo, "git worktree list").stdout).not.toContain("review-wt");
 
     sh(repo, "git checkout -q main");
-    const onMain = await laneIntegrate(risky.state!.id, { reviewed: true });
+    const onMain = await laneIntegrate(risky.state!.id);
     expect(onMain.report).toContain("GATE: caller repo is on main");
     sh(repo, "git checkout -q feat/x");
-    expect((await laneIntegrate(risky.state!.id, { reviewed: true })).integrated).toBe(true);
+    expect((await laneIntegrate(risky.state!.id)).integrated).toBe(true);
 
     expect(laneGc(out.state!.id)).toContain(`removed ${out.state!.id}`);
     expect(readLedger().find((r) => r.id === out.state!.id && r.kind === "outcome")).toMatchObject({ outcome: "dropped", by: "gc" });
@@ -174,6 +228,16 @@ describe("ledger and integration gate", () => {
     expect(big.report).toContain("STATUS: integrated");
     expect(big.integrated).toBe(true);
     expect(readFileSync(join(repo, "c.txt"), "utf8")).toBe("g\n");
+  });
+
+  test("auto: a risky spec is reviewed before the gate, and integrates on ship", async () => {
+    sh(repo, "git checkout -q -- . && git clean -qfd");
+    fake(`out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; echo h > a.txt; echo i > b.txt; echo j > c.txt; printf 'VERDICT: ship\\n' > "$out"`);
+    const auto = await laneAuto({ specPath: spec("a.txt, b.txt, c.txt", "RISK: migration\n"), repo, profile });
+    expect(auto.report).toContain("REVIEW: high");
+    expect(auto.report).toContain("REVIEW REPORT");
+    expect(auto.report).toContain("STATUS: integrated");
+    expect(readFileSync(join(repo, "c.txt"), "utf8")).toBe("j\n");
   });
 
   test("a torn ledger line is skipped", () => {

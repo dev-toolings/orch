@@ -105,6 +105,7 @@ ACCEPT: observable criteria checked after VERIFY
 SETUP: command that provisions the worktree, or none   (optional)
 REASONING: low|medium|high|xhigh   (only to override the profile default)
 RISK: migration|security|public-api   (optional; risky paths also count)
+MECHANICAL: yes   (optional; no design left: the route may drop to medium)
 ```
 
 The worker starts from your working tree as it is, uncommitted changes
@@ -127,10 +128,11 @@ unless the report is `failed` and you need one cited excerpt.
 Report status:
 - `complete`: `lane auto` has already run the gate. `STATUS: integrated` means
   applied, uncommitted, on your feature branch: read the diff and spot-check.
-  A `GATE:` refusal (VERIFY, a file outside FILES, risk without review, the
-  default branch) names its fix; once fixed, `lane integrate <id>`
-  (`--reviewed` after a `ship` review). After `lane run`, `lane integrate <id>`
-  too; the INTEGRATE line stays the manual path (then `lane gc --drop <id>`).
+  A risky lane is reviewed first and needs a recorded `ship`. A `GATE:`
+  refusal (VERIFY, a file outside FILES, no `ship` review, the default branch)
+  names its fix; once fixed, `lane integrate <id>`, after `lane review --lane
+  <id>` for a risky one. After `lane run`, `lane integrate <id>` too; the
+  INTEGRATE line stays the manual path (then `lane gc --drop <id>`).
 - `noop`: the change already exists; confirm and move on.
 - `refused`, `failed`: one corrected spec at most, then do it yourself or ask.
 - `blocked`: never retry or reword; tell the operator the denial.
@@ -148,7 +150,8 @@ risk). Otherwise verify the diff yourself.
 
 Another model's opinion on a question, not a diff: write the question to a
 file and run `lane ask --file <f>` (`--risk high` for the stronger reviewer,
-`--to` for another harness). Never call `codex`, `claude` or `grok` yourself.
+`--to` for another harness, `--model` and `--effort` to pin the reviewer when
+the operator names one). Never call `codex`, `claude` or `grok` yourself.
 
 ## Reporting to the operator
 

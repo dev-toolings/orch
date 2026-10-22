@@ -20,8 +20,11 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   lane (integrated, dropped, no change) to `lanes.jsonl` under the state dir.
   `src/lanes/route.ts` backs `lane route` and `lane auto`: spec features
   (FILES, stacks, risk) plus that ledger pick the lead itself or a harness,
-  with no model call. `lane integrate` is the gate: VERIFY passed, every
-  touched file in FILES, risk reviewed, a feature branch; else nothing moves.
+  with no model call; it also picks the effort and, once a record is long and
+  reliable, the cheapest harness per integrated lane. `lane integrate` is the
+  gate: VERIFY passed, every touched file in FILES, a recorded `ship` review
+  for a risky spec (`lane review --lane <id>`), a feature branch; else nothing
+  moves and the refusal is logged.
 - `src/orch.ts` installs only what `src/install/render.ts` lists and records it in a
   manifest; it renders targets only for detected harnesses. Uninstall removes
   exactly that and keeps edited files.

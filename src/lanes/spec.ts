@@ -7,7 +7,7 @@ export interface Spec {
 }
 
 export const REQUIRED = ["OBJECTIVE", "FILES", "INTERFACES", "CONSTRAINTS", "VERIFY", "ACCEPT"];
-const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+export const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 export function parseSpec(raw: string): Spec {
   const fields: Record<string, string> = {};
