@@ -86,7 +86,9 @@ from the machine, capped by the profile), depth 1.
 - Exploration that would read many files: your harness's read-only explorer
   (Claude and Grok `lead-explore`, Codex `explorer`). Keep only its
   conclusions.
-- Mechanical code above that size: `lane run`. Write the spec to a file first.
+- Mechanical code above that size: `lane auto --spec <file>` (route, run,
+  integration gate). Write the spec to a file first; `lane route --spec
+  <file>` shows the choice and its reason without running anything.
 - Native subagents get no name unless you must message them later: a named
   one is a teammate that stays alive, and listed, after its task. Shut down
   every named one once its result is in, and drop every lane once integrated.
@@ -102,6 +104,8 @@ VERIFY: command that proves it works
 ACCEPT: observable criteria checked after VERIFY
 SETUP: command that provisions the worktree, or none   (optional)
 REASONING: low|medium|high|xhigh   (only to override the profile default)
+RISK: migration|security|public-api   (optional; risky paths also count)
+MECHANICAL: yes   (optional; no design left: the route may drop to medium)
 ```
 
 The worker starts from your working tree as it is, uncommitted changes
@@ -112,7 +116,8 @@ else `bun install --frozen-lockfile` when a root bun.lock exists. Name SETUP
 whenever VERIFY needs more (a nested lockfile, a virtualenv, a `.env` copied
 from `$LANE_REPO`).
 
-Run `lane run --to codex|grok|claude --spec <file>` as a plain command: no
+Run `lane auto --spec <file>`, or `lane run --to codex|grok|claude --spec
+<file>` to pick the worker yourself, as a plain command: no
 redirection, pipe or `VAR=` prefix (under a sandboxed Codex lead, only the
 plain form runs outside the sandbox, after the operator approves it: SETUP
 and VERIFY run on the host). A run takes minutes: start it in the background when
@@ -121,8 +126,13 @@ report. Read only the report it prints. Do not open worker logs or terminals
 unless the report is `failed` and you need one cited excerpt.
 
 Report status:
-- `complete`: read the diff stat, spot-check, re-run VERIFY if in doubt, then
-  apply it with the report's INTEGRATE line and drop the lane (`lane gc --drop <id>`).
+- `complete`: `lane auto` has already run the gate. `STATUS: integrated` means
+  applied, uncommitted, on your feature branch: read the diff and spot-check.
+  A risky lane is reviewed first and needs a recorded `ship`. A `GATE:`
+  refusal (VERIFY, a file outside FILES, no `ship` review, the default branch)
+  names its fix; once fixed, `lane integrate <id>`, after `lane review --lane
+  <id>` for a risky one. After `lane run`, `lane integrate <id>` too; the
+  INTEGRATE line stays the manual path (then `lane gc --drop <id>`).
 - `noop`: the change already exists; confirm and move on.
 - `refused`, `failed`: one corrected spec at most, then do it yourself or ask.
 - `blocked`: never retry or reword; tell the operator the denial.
@@ -140,7 +150,8 @@ risk). Otherwise verify the diff yourself.
 
 Another model's opinion on a question, not a diff: write the question to a
 file and run `lane ask --file <f>` (`--risk high` for the stronger reviewer,
-`--to` for another harness). Never call `codex`, `claude` or `grok` yourself.
+`--to` for another harness, `--model` and `--effort` to pin the reviewer when
+the operator names one). Never call `codex`, `claude` or `grok` yourself.
 
 ## Reporting to the operator
 

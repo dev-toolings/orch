@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadSources, readMeta, searchDocs, type Source, statusLines, updateSource } from "../src/docs/docs.ts";
+import { loadSources, pruneSources, readMeta, searchDocs, type Source, statusLines, updateSource } from "../src/docs/docs.ts";
 
 let root: string;
 let docs: string;
@@ -85,5 +85,30 @@ describe("docs", () => {
     const lines = statusLines([gitSrc(), { ...llmsSrc(), id: "missing" }], docs);
     expect(lines[0]).toContain("indexed");
     expect(lines[1]).toContain("not fetched");
+  });
+
+  test("status lists orphans and pruning removes only marked undeclared directories", () => {
+    const orphanRoot = join(root, "orphan-case");
+    const declared = { ...llmsSrc(), id: "active" };
+    mkdirSync(join(orphanRoot, declared.id), { recursive: true });
+    writeFileSync(join(orphanRoot, declared.id, ".orch-docs.json"), JSON.stringify({
+      id: declared.id, version: "v1", fetched: "2026-10-22T00:00:00.000Z", files: 0, indexed: false,
+    }));
+    mkdirSync(join(orphanRoot, "retired"), { recursive: true });
+    writeFileSync(join(orphanRoot, "retired", ".orch-docs.json"), "{}");
+    mkdirSync(join(orphanRoot, "unowned"));
+    const external = join(root, "external");
+    mkdirSync(external);
+    writeFileSync(join(external, ".orch-docs.json"), "{}");
+    symlinkSync(external, join(orphanRoot, "external-link"), "dir");
+
+    expect(statusLines([declared], orphanRoot).at(-1)).toBe(
+      `${"retired".padEnd(20)} orphan       not in catalog/docs.yaml (orch docs update removes it)`,
+    );
+    expect(pruneSources([declared], orphanRoot)).toEqual(["retired"]);
+    expect(existsSync(join(orphanRoot, declared.id))).toBe(true);
+    expect(existsSync(join(orphanRoot, "retired"))).toBe(false);
+    expect(existsSync(join(orphanRoot, "unowned"))).toBe(true);
+    expect(existsSync(join(external, ".orch-docs.json"))).toBe(true);
   });
 });

@@ -16,6 +16,8 @@ review:
   claude: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium }, fallback: [grok] }
   codex: { to: claude, model: opus, effort: high, fallback: [claude, grok] }
   grok: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium }, fallback: [codex, claude] }
+# `lane route`: order before the ledger has evidence (lanes.jsonl in the state dir)
+route: { order: [codex, claude, grok], self_max_files: 2, min_samples: 5, medium_max_files: 4, cost_min_samples: 10, cost_floor: 0.7 }
 limits:
   max_concurrent_ceiling: 8
   verify_concurrent: 2
