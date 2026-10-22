@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { doctorChecks, missingSystemPackages } from "./install/doctor.ts";
-import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs/docs.ts";
+import { DOCS_USAGE, loadSources, pruneSources, searchDocs, statusLines, updateSource } from "./docs/docs.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./install/manifest.ts";
 import { addNote, callerFromEnv, closePairs, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem/mem.ts";
 import { badges, recordOutcome, reflect } from "./mem/outcome.ts";
@@ -166,6 +166,9 @@ async function docs(args: string[]) {
         console.log(`${s.id.padEnd(20)} FAILED  ${(e as Error).message}`);
         process.exitCode = 1;
       }
+    }
+    if (!positionals.length) {
+      for (const id of pruneSources(sources)) console.log(`${id.padEnd(20)} pruned`);
     }
   } else if (sub === "status") {
     for (const l of statusLines(sources)) console.log(l);

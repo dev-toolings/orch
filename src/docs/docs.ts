@@ -1,7 +1,7 @@
 // docs: a local, versioned corpus of official documentation, indexed by ctx
 // and searched on demand. The lead keeps pointers in memory, never the docs.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
@@ -103,12 +103,44 @@ export async function updateSource(s: Source, opts: { root?: string; now?: Date;
   return meta;
 }
 
+export function orphanSources(sources: Source[], root = docsDir()): string[] {
+  let rootStat;
+  try {
+    rootStat = lstatSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  if (!rootStat.isDirectory()) return [];
+  const declared = new Set(sources.map((s) => s.id));
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && !declared.has(entry.name))
+    .filter((entry) => {
+      try {
+        return lstatSync(join(root, entry.name, ".orch-docs.json")).isFile();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    })
+    .map((entry) => entry.name)
+    .sort();
+}
+
+export function pruneSources(sources: Source[], root = docsDir()): string[] {
+  const orphans = orphanSources(sources, root);
+  for (const id of orphans) rmSync(join(root, id), { recursive: true, force: true });
+  return orphans;
+}
+
 export function statusLines(sources: Source[], root = docsDir()): string[] {
-  return sources.map((s) => {
+  const lines = sources.map((s) => {
     const m = readMeta(s.id, root);
     if (!m) return `${s.id.padEnd(20)} ${s.stack.padEnd(12)} not fetched`;
     return `${s.id.padEnd(20)} ${s.stack.padEnd(12)} ${m.version.padEnd(9)} ${m.fetched.slice(0, 10)}  ${String(m.files).padStart(6)} files  ${m.indexed ? "indexed" : "NOT INDEXED"}`;
   });
+  lines.push(...orphanSources(sources, root).map((id) => `${id.padEnd(20)} orphan       not in catalog/docs.yaml (orch docs update removes it)`));
+  return lines;
 }
 
 // ctx prints `path:line kind : note`; add the line's text so the lead can
