@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { HARNESSES, type Harness, loadProfile } from "./core/profile.ts";
+import { detect, onPath, type Which } from "./harness/registry.ts";
 import { hookCommand, leadPrompt } from "./install/render.ts";
 
 function codexHookOverride(event: string, handlerEvent: string, matcher?: string): string {
@@ -67,6 +68,11 @@ export function leadGuard(env: NodeJS.ProcessEnv = process.env): string | null {
   return env.ORCH_LANE === "1" ? "lead: a lane worker cannot start a lead session" : null;
 }
 
+export function leadAvailability(h: Harness, which: Which = onPath): string | null {
+  const detected = detect(which);
+  return detected.includes(h) ? null : `lead: ${h} is not installed (detected: ${detected.join(", ") || "none"})`;
+}
+
 if (import.meta.main) {
   const refusal = leadGuard();
   if (refusal) {
@@ -77,6 +83,11 @@ if (import.meta.main) {
   if (!(HARNESSES as string[]).includes(h)) {
     console.error("usage: lead claude|codex|grok [harness args...]");
     process.exit(2);
+  }
+  const unavailable = leadAvailability(h as Harness);
+  if (unavailable) {
+    console.error(unavailable);
+    process.exit(1);
   }
   const full = [...leadArgv(h as Harness, undefined, rest), ...rest];
   const env = { ...process.env, ORCH_LEAD: "1", ORCH_HARNESS: h, ORCH_SESSION: `${h}-${Date.now().toString(36)}` };

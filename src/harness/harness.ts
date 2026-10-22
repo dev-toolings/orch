@@ -1,4 +1,5 @@
-import type { Harness, ModelChoice } from "../core/profile.ts";
+import type { HarnessId } from "./registry.ts";
+import type { ModelChoice } from "../core/profile.ts";
 
 // Scopes the run and opts out of any orchestration rule the worker's global
 // instructions may carry. Wording taken from fable-advisor's luna-implementer:
@@ -49,7 +50,7 @@ const CLAUDE_WRITE_WORKER = [
 ];
 
 export function workerArgv(
-  to: Harness,
+  to: HarnessId,
   choice: ModelChoice,
   // bin: the executable to run instead of the harness name (lane pins Grok's).
   opts: { cwd: string; promptPath: string; effort?: string; readOnly: boolean; lastMessagePath: string; bin?: string },
@@ -106,7 +107,7 @@ function lastJson(log: string): any {
   }
 }
 
-export function parseWorkerOutput(to: Harness, log: string, lastMessage: string): { message: string; usage: Usage } {
+export function parseWorkerOutput(to: HarnessId, log: string, lastMessage: string): { message: string; usage: Usage } {
   if (to === "codex") {
     const m = /tokens used\s*\n\s*([\d\s,.]+)/.exec(log);
     const total = m ? Number(m[1].replace(/[^\d]/g, "")) : undefined;

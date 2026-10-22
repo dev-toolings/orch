@@ -10,7 +10,8 @@ import { pinnedGrok, grokProfileInstalled } from "./harness/grok-runtime.ts";
 import { classify, parseWorkerOutput, PREAMBLE, REVIEW_PREAMBLE, type Status, type Usage, workerArgv } from "./harness/harness.ts";
 import { bound, tail } from "./core/output.ts";
 import { stateDir } from "./core/paths.ts";
-import { HARNESSES, type Harness, loadProfile, type Profile } from "./core/profile.ts";
+import { HARNESSES, type Harness, loadProfile, type ModelChoice, type Profile, type ReviewChoice } from "./core/profile.ts";
+import { HARNESS_IDS, installed, type HarnessId, type Which } from "./harness/registry.ts";
 import { runLogged, workerEnv } from "./harness/proc.ts";
 import { fmtUsage, laneReport, reviewReport } from "./lanes/report.ts";
 import { releaseSlot, reserveSlot } from "./lanes/slots.ts";
@@ -228,7 +229,7 @@ async function reserveVerifySlot(state: string, max: number, id: string, timeout
 }
 
 export async function laneRun(opts: {
-  to: Harness;
+  to: HarnessId;
   specPath: string;
   repo: string;
   profile: Profile;
@@ -239,6 +240,10 @@ export async function laneRun(opts: {
   const p = opts.profile;
   const depth = depthRefusal("LANE REPORT", p.limits.max_depth);
   if (depth) return { report: depth };
+  if (!installed(opts.to)) {
+    const present = HARNESS_IDS.filter((h) => installed(h));
+    return { report: `LANE REPORT\nSTATUS: unavailable\nREASON: ${opts.to} is not installed (installed: ${present.join(", ") || "none"})\n` };
+  }
   if (opts.channel !== undefined && !["headless", "orca"].includes(opts.channel)) {
     return { report: "LANE REPORT\nSTATUS: refused-by-lane\nREASON: channel must be headless or orca\n" };
   }
@@ -450,7 +455,62 @@ export async function laneRun(opts: {
   }
 }
 
-type ConsultOpts = { from: Harness; to?: Harness; repo: string; profile: Profile; risk?: "normal" | "high" };
+type ConsultOpts = { from: Harness; to?: HarnessId; repo: string; profile: Profile; risk?: "normal" | "high"; base?: string };
+
+function installedReviewers(which?: Which): HarnessId[] {
+  return HARNESS_IDS.filter((h) => installed(h, which));
+}
+
+function reviewChoiceFor(to: HarnessId, fromChoice: ReviewChoice, profile: Profile): ReviewChoice {
+  if (fromChoice.to === to) return fromChoice;
+  const aimed = Object.values(profile.review).find((choice) => choice?.to === to);
+  if (aimed) return aimed;
+  return { to, ...profile.lead[to] };
+}
+
+export function resolveReviewer(
+  from: Harness,
+  profile: Profile,
+  opts: { to?: HarnessId; risk: "normal" | "high" },
+  which?: Which,
+): { to: HarnessId; choice: ModelChoice; note?: string } | { unavailable: string } {
+  const fromChoice = profile.review[from];
+  const present = installedReviewers(which);
+  const installedNote = present.join(", ") || "none";
+  const choose = (to: HarnessId, note?: string) => {
+    const entry = reviewChoiceFor(to, fromChoice, profile);
+    const { high, to: _target, ...normal } = entry;
+    const choice = opts.risk === "high" && high ? { ...normal, ...high } : normal;
+    return { to, choice, ...(note ? { note } : {}) };
+  };
+
+  if (opts.to) {
+    if (!installed(opts.to, which)) return { unavailable: `${opts.to} is not installed (installed: ${installedNote})` };
+    const sameFamilyOnly = opts.to === from && present.length === 1 && present[0] === from;
+    const note = opts.to === from
+      ? sameFamilyOnly ? "same family: no other harness installed" : "same family: explicit --to"
+      : undefined;
+    return choose(opts.to, note);
+  }
+
+  const ordered = [...new Set([fromChoice.to, ...(fromChoice.fallback ?? [])])];
+  const alternatives = [
+    ...ordered.filter((h) => h !== from),
+    ...HARNESS_IDS.filter((h) => h !== from && !ordered.includes(h)),
+  ];
+  const selected = alternatives.find((h) => installed(h, which));
+  if (selected) {
+    const index = alternatives.indexOf(selected);
+    const missing = alternatives.slice(0, index).filter((h) => !installed(h, which));
+    const note = missing.length ? `fallback: ${missing.join(", ")} not installed` : undefined;
+    return choose(selected, note);
+  }
+
+  if (present.length === 1 && present[0] === from) {
+    return choose(from, "same family: no other harness installed");
+  }
+  return { unavailable: `no reviewer harness is installed (installed: ${installedNote})` };
+}
 
 export function laneReview(opts: ConsultOpts & { base: string; goal: string }) {
   return consult("REVIEW", opts, `${REVIEW_PREAMBLE}Review the changes from ${opts.base} to the working tree of this repository (git diff ${opts.base}) against this goal:
@@ -476,14 +536,9 @@ async function consult(kind: "REVIEW" | "ASK", opts: ConsultOpts, prompt: string
   const depth = depthRefusal(label, opts.profile.limits.max_depth);
   if (depth) return depth;
   const risk = opts.risk ?? "normal";
-  const fromChoice = opts.profile.review[opts.from];
-  const to = opts.to ?? fromChoice.to;
-  // A model id belongs to one harness: with --to, take the choice of a review
-  // entry aimed at that harness, else let the harness pick its own model.
-  const review = Object.values(opts.profile.review);
-  const entry = to === fromChoice.to ? fromChoice : review.find((r) => r.to === to) ?? { to };
-  const { high, ...normal } = entry;
-  const rc = risk === "high" && high ? { ...normal, ...high } : normal;
+  const resolution = resolveReviewer(opts.from, opts.profile, { to: opts.to, risk });
+  if ("unavailable" in resolution) return `${label}\nSTATUS: unavailable\nREASON: ${resolution.unavailable}\n`;
+  const { to, choice: rc, note } = resolution;
   if (to === "grok" && !grokProfileInstalled()) return `${label}\nSTATUS: unavailable\nREASON: Grok profiles orch-lane/orch-review missing or modified in ~/.grok/sandbox.toml: run orch install\n`;
   const grokBin = to === "grok" ? pinnedGrok() : undefined;
   if (grokBin === null) return `${label}\nSTATUS: unavailable\nREASON: grok not found on PATH\n`;
@@ -503,11 +558,12 @@ async function consult(kind: "REVIEW" | "ASK", opts: ConsultOpts, prompt: string
     const call = workerArgv(to, rc, { cwd: opts.repo, promptPath, readOnly: true, lastMessagePath: lastPath, bin: grokBin });
     const run = await runLogged(call.argv, {
       cwd: opts.repo, logPath, stdinPath: call.stdin ? promptPath : undefined,
-      timeoutMs: opts.profile.limits.timeout_seconds * 1000, env: workerEnv(),
+      timeoutMs: opts.profile.limits.timeout_seconds * 1000,
+      env: workerEnv(),
     });
     const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
     const { message, usage } = parseWorkerOutput(to, log, existsSync(lastPath) ? readFileSync(lastPath, "utf8") : "");
-    return bound(reviewReport({ kind, to, model: rc.model, effort: rc.effort, risk, exitCode: run.code, timedOut: run.timedOut, usage, logPath, message }), opts.profile.limits.report_max_bytes);
+    return bound(reviewReport({ kind, to, model: rc.model, effort: rc.effort, risk, exitCode: run.code, timedOut: run.timedOut, usage, logPath, message, note }), opts.profile.limits.report_max_bytes);
   } finally {
     releaseSlot(sd, slot);
   }
@@ -596,12 +652,13 @@ async function main() {
   const profile = loadProfile(values.profile);
   const repo = resolve(values.repo ?? process.cwd());
   const isHarness = (h?: string): h is Harness => !!h && (HARNESSES as string[]).includes(h);
+  const isHarnessId = (h?: string): h is HarnessId => !!h && (HARNESS_IDS as string[]).includes(h);
   if (cmd === "budget") {
     const budget = laneBudget(profile.limits);
     console.log(budget.budget);
     console.log(`cpu ${budget.cpu} ram ${budget.ram} ceiling ${budget.ceiling} verify ${profile.limits.verify_concurrent}`);
   } else if (cmd === "run") {
-    if (!isHarness(values.to) || !values.spec) throw new Error("usage: lane run --to codex|grok|claude --spec <file>");
+    if (!isHarnessId(values.to) || !values.spec) throw new Error("usage: lane run --to claude|codex|grok --spec <file>");
     const { report } = await laneRun({ to: values.to, specPath: values.spec, repo, profile, effort: values.effort, channel: values.channel });
     process.stdout.write(report);
   } else if (cmd === "review" || cmd === "ask") {
@@ -613,7 +670,7 @@ async function main() {
     if (cmd === "review" ? !values.base || !values.goal : !values.file) throw new Error(usage);
     if (values.risk !== undefined && values.risk !== "normal" && values.risk !== "high") throw new Error(usage);
     const risk = values.risk === "high" ? "high" : "normal";
-    const to = isHarness(values.to) ? values.to : undefined;
+    const to = isHarnessId(values.to) ? values.to : undefined;
     process.stdout.write(cmd === "review"
       ? await laneReview({ from, to, base: values.base!, goal: values.goal!, repo, profile, risk })
       : await laneAsk({ from, to, question: readFileSync(resolve(values.file!), "utf8"), repo, profile, risk }));

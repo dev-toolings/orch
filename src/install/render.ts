@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Profile, ROOT } from "../core/profile.ts";
+import type { HarnessId } from "../harness/registry.ts";
 
 export interface Target {
   path: string; // relative to HOME
   kind: "file" | "symlink";
   content: string; // file body, or symlink target
+  harness?: HarnessId;
 }
 
 const body = (name: string) => readFileSync(join(ROOT, "catalog", name), "utf8").trimEnd();
@@ -39,11 +41,12 @@ function hookFile(harness: "claude" | "grok"): string {
 
 // Files written under HOME. Codex gets no agent file (`lead codex` passes the
 // lead prompt as developer_instructions at launch), only an exec-policy rule.
-export function render(profile: Profile): Target[] {
+export function render(profile: Profile, harnesses: HarnessId[]): Target[] {
   const claude = profile.lead.claude;
-  return [
+  const targets: Target[] = [
     {
       path: ".claude/agents/lead.md",
+      harness: "claude",
       kind: "file",
       content: frontmatter({ name: "lead", description: LEAD_DESCRIPTION, model: claude.model ?? undefined, effort: claude.effort }) + body("lead.md") + "\n",
     },
@@ -51,12 +54,14 @@ export function render(profile: Profile): Target[] {
       // no model line (Grok drops agents whose model it does not know); lead.ts and
       // harness.ts pin the model on the command line instead
       path: ".grok/agents/lead.md",
+      harness: "grok",
       kind: "file",
       content: frontmatter({ name: "lead", description: LEAD_DESCRIPTION }) + body("lead.md") + "\n",
     },
     {
       // Claude's built-in Explore inherits the lead's model (Opus): this one is pinned
       path: ".claude/agents/lead-explore.md",
+      harness: "claude",
       kind: "file",
       content: frontmatter({
         name: "lead-explore",
@@ -67,6 +72,7 @@ export function render(profile: Profile): Target[] {
     },
     {
       path: ".grok/agents/lead-explore.md",
+      harness: "grok",
       kind: "file",
       content: frontmatter({
         name: "lead-explore",
@@ -76,22 +82,26 @@ export function render(profile: Profile): Target[] {
     {
       // Lets a Codex lead run lane and orch outside its workspace sandbox (see the file).
       path: ".codex/rules/orch.rules",
+      harness: "codex",
       kind: "file",
       content: body("codex-orch.rules") + "\n",
     },
     {
       // The profile lane runs Grok write workers under: no child network (see the file).
       path: ".grok/sandbox.toml",
+      harness: "grok",
       kind: "file",
       content: body("grok-sandbox.toml") + "\n",
     },
     {
       path: ".claude/orch/lead-settings.json",
+      harness: "claude",
       kind: "file",
       content: hookFile("claude"),
     },
     {
       path: ".grok/hooks/orch-lead.json",
+      harness: "grok",
       kind: "file",
       content: hookFile("grok"),
     },
@@ -99,6 +109,7 @@ export function render(profile: Profile): Target[] {
     { path: ".local/bin/lead", kind: "symlink", content: join(ROOT, "src", "lead.ts") },
     { path: ".local/bin/orch", kind: "symlink", content: join(ROOT, "src", "orch.ts") },
   ];
+  return targets.filter((target) => !target.harness || harnesses.includes(target.harness));
 }
 
 export function leadPrompt(): string {

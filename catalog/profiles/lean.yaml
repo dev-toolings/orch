@@ -11,9 +11,9 @@ lanes:
 explore:
   claude: haiku
 review:
-  claude: { to: codex, model: gpt-6-luna, effort: high }
-  codex: { to: claude, model: sonnet, effort: medium }
-  grok: { to: codex, model: gpt-6-luna, effort: high }
+  claude: { to: codex, model: gpt-6-luna, effort: high, fallback: [grok] }
+  codex: { to: claude, model: sonnet, effort: medium, fallback: [claude, grok] }
+  grok: { to: codex, model: gpt-6-luna, effort: high, fallback: [codex, claude] }
 limits:
   max_concurrent_ceiling: 2
   verify_concurrent: 1

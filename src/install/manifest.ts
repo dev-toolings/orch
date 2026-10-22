@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmdirSync, rmSync, symlinkSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Target } from "./render.ts";
+import type { HarnessId } from "../harness/registry.ts";
 
 export interface Entry {
   path: string;
   kind: "file" | "symlink";
   sha256: string;
+  harness?: HarnessId;
 }
 
 export interface Manifest {
@@ -41,11 +43,19 @@ function current(abs: string): { kind: "file" | "symlink"; sha256: string } | nu
   return { kind: "file", sha256: "not-a-file" };
 }
 
-export type Action = { path: string; op: "create" | "update" | "unchanged" | "conflict"; reason?: string };
+export type Action = { path: string; op: "create" | "update" | "unchanged" | "conflict" | "kept"; reason?: string };
+
+function entryHarness(entry: Entry): HarnessId | undefined {
+  if (entry.harness) return entry.harness;
+  if (entry.path.startsWith(".claude/")) return "claude";
+  if (entry.path.startsWith(".codex/")) return "codex";
+  if (entry.path.startsWith(".grok/")) return "grok";
+  return undefined;
+}
 
 export function plan(home: string, targets: Target[], manifest: Manifest | null): Action[] {
   const owned = new Map((manifest?.entries ?? []).map((e) => [e.path, e]));
-  return targets.map((t) => {
+  const actions: Action[] = targets.map((t) => {
     const cur = current(join(home, t.path));
     const want = sha(t.content);
     if (!cur) return { path: t.path, op: "create" };
@@ -57,6 +67,15 @@ export function plan(home: string, targets: Target[], manifest: Manifest | null)
     if (mine.sha256 !== cur.sha256) return { path: t.path, op: "conflict", reason: "edited since install" };
     return { path: t.path, op: "update" };
   });
+  const targetPaths = new Set(targets.map((target) => target.path));
+  const selected = new Set(targets.flatMap((target) => target.harness ? [target.harness] : []));
+  for (const entry of manifest?.entries ?? []) {
+    const harness = entryHarness(entry);
+    if (!targetPaths.has(entry.path) && harness && !selected.has(harness) && current(join(home, entry.path))) {
+      actions.push({ path: entry.path, op: "kept", reason: "harness absent" });
+    }
+  }
+  return actions;
 }
 
 export function apply(home: string, stateDir: string, profile: string, targets: Target[], actions: Action[]): Manifest {
@@ -64,12 +83,17 @@ export function apply(home: string, stateDir: string, profile: string, targets: 
   const prev = readManifest(stateDir);
   const created = new Set(prev?.created_dirs ?? []);
   const targetPaths = new Set(targets.map((t) => t.path));
+  const keptPaths = new Set(actions.filter((action) => action.op === "kept").map((action) => action.path));
   const retiredKept: Entry[] = [];
   for (const e of prev?.entries ?? []) {
     if (targetPaths.has(e.path)) continue;
     const abs = join(home, e.path);
     const cur = current(abs);
     if (!cur) continue;
+    if (keptPaths.has(e.path)) {
+      retiredKept.push(e);
+      continue;
+    }
     if (cur.sha256 === e.sha256) rmSync(abs, { force: true });
     else retiredKept.push(e);
   }
@@ -99,7 +123,7 @@ export function apply(home: string, stateDir: string, profile: string, targets: 
     profile,
     installed_at: new Date().toISOString(),
     entries: [
-      ...targets.map((t) => ({ path: t.path, kind: t.kind, sha256: sha(t.content) })),
+      ...targets.map((t) => ({ path: t.path, kind: t.kind, sha256: sha(t.content), harness: t.harness })),
       ...retiredKept,
     ],
     created_dirs: [...created],
@@ -140,10 +164,14 @@ export function uninstall(home: string, stateDir: string, dryRun: boolean): stri
   return out;
 }
 
-export function drift(home: string, stateDir: string): string[] {
+export function drift(home: string, stateDir: string, harnesses?: HarnessId[]): string[] {
   const m = readManifest(stateDir);
   if (!m) return ["nothing installed"];
-  return m.entries.map((e) => {
+  const selected = harnesses ? new Set(harnesses) : null;
+  return m.entries.filter((entry) => {
+    const harness = entryHarness(entry);
+    return !selected || !harness || selected.has(harness);
+  }).map((e) => {
     const cur = current(join(home, e.path));
     return `${!cur ? "missing" : cur.sha256 === e.sha256 ? "ok" : "edited"} ${e.path}`;
   });
