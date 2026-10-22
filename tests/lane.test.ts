@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { laneAsk, laneGc, laneReview, laneRun, listLanes, resolveReviewer, setupCommand } from "../src/lane.ts";
+import { laneAsk, laneGc, laneReview, laneRun, listLanes, listOrphans, resolveReviewer, setupCommand } from "../src/lane.ts";
 import { bound } from "../src/core/output.ts";
 import { laneReport } from "../src/lanes/report.ts";
 import { SNAPSHOT_LIMITS, statusPaths } from "../src/lanes/worktree.ts";
@@ -608,6 +608,41 @@ describe("gc", () => {
     expect(output).toContain(`kept ${pending.state!.id} (complete, not integrated)`);
     expect(readFileSync(join(r, "applied.txt"), "utf8")).toBe("integrated\n");
     expect(readFileSync(join(r, "unrelated.txt"), "utf8")).toBe("extra change\n");
+  });
+
+  test("lists a lane directory without a record and removes its work only on --drop", () => {
+    const r = join(root, "gc-orphan");
+    mkdirSync(r);
+    sh(r, "git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init");
+    const lanes = join(process.env.ORCH_STATE!, "lanes");
+    const dead = spawnSync("true").pid;
+    const id = `20261020144735-codex-${dead}-orph`;
+    const dir = join(lanes, id);
+    mkdirSync(dir, { recursive: true });
+    sh(r, `git worktree add -q -b lane/${id} ${join(dir, "wt")}`);
+    writeFileSync(join(dir, "wt", "work.txt"), "worker result\n");
+    const logsOnly = join(lanes, `20261020104932-codex-${dead}-logs`);
+    mkdirSync(logsOnly);
+    const starting = join(lanes, `20261022000000-codex-${process.pid}-live`);
+    mkdirSync(starting);
+    try {
+      const orphan = listOrphans().find((o) => o.id === id);
+      expect(orphan).toMatchObject({ worktree: true, repo: sh(r, "pwd -P").stdout.trim(), dirty: 1 });
+      expect(listOrphans().some((o) => starting.endsWith(o.id))).toBe(false);
+
+      const output = laneGc();
+      expect(output.some((l) => l.startsWith(`kept orphan ${id} (no lane record`))).toBe(true);
+      expect(output.some((l) => l.startsWith("removed orphan 20261020104932-codex-") && l.endsWith("(logs only)"))).toBe(true);
+      expect(readFileSync(join(dir, "wt", "work.txt"), "utf8")).toBe("worker result\n");
+      expect(existsSync(starting)).toBe(true);
+
+      expect(laneGc(id)).toContain(`removed orphan ${id}`);
+      expect(existsSync(dir)).toBe(false);
+      expect(sh(r, `git branch --list lane/${id}`).stdout.trim()).toBe("");
+      expect(sh(r, "git worktree list --porcelain").stdout).not.toContain(id);
+    } finally {
+      rmSync(starting, { recursive: true, force: true });
+    }
   });
 });
 

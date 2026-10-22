@@ -35,7 +35,7 @@ dépendance externe. Plan :
 | `lane run --to codex --spec f --channel headless` | Force le canal sans Orca |
 | `lane run --to codex --spec f --channel orca` | Demande le canal Orca ; repli headless si Orca ou son relais est indisponible |
 | `lane review --base <ref> --goal "..."` | Revue croisée lecture seule (sur risque) |
-| `lane status`, `lane gc` | Liste aussi les lanes en cours ; supprime les branches intégrées ou vides et termine les nettoyages Orca restés en attente |
+| `lane status`, `lane gc` | Liste aussi les lanes en cours et les lanes orphelines (dossier sans `state.json`) ; supprime les branches intégrées ou vides, les orphelines sans worktree, et termine les nettoyages Orca restés en attente. Une orpheline avec worktree reste jusqu'à `lane gc --drop <id>` |
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
 | `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |
 | `orch mem add\|search\|recent\|review\|show` | Mémoire du lead : notes Markdown, rappel à la demande ; `review` liste les notes proches |
