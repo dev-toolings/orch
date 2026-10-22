@@ -273,9 +273,13 @@ describe("Orca lane channel", () => {
       failed = listLanes().find(s => report.includes(`ID: ${s.id}\n`));
       expect(failed).toBeDefined();
       // A lost create reply is recovered by name during gc. That recovery
-      // must not turn a rejected caller checkout into a removal target.
+      // must not turn a rejected caller checkout into a removal target: gc
+      // forgets the record and leaves the checkout and its branch alone.
       if (mode === "repo-path" || mode === "repo-alias") {
-        expect(laneGc(failed!.id)).toContain(`kept ${failed!.id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
+        expect(laneGc(failed!.id)).toContain(`forgot ${failed!.id} (worktree is the caller repo: lane record removed, repo, branch and Orca entry untouched)`);
+        expect(listLanes().some(s => s.id === failed!.id)).toBe(false);
+        expect(existsSync(repo)).toBe(true);
+        expect(sh(repo, "git branch --show-current").stdout).toBe(branch);
       }
       const calls = readFileSync(join(root, "orca-calls"), "utf8").slice(before.length);
       expect(calls).toContain('["worktree","create"');
@@ -287,7 +291,7 @@ describe("Orca lane channel", () => {
     }
   });
 
-  test("gc retains a lane pointing at its repo, including a symlink alias, without Orca removal", () => {
+  test("gc forgets a lane pointing at its repo, including a symlink alias, without touching the repo or Orca", () => {
     fakeOrca();
     const before = readFileSync(join(root, "orca-calls"), "utf8");
     const branch = sh(repo, "git branch --show-current").stdout.trim();
@@ -295,15 +299,15 @@ describe("Orca lane channel", () => {
     const dir = join(process.env.ORCH_STATE!, "lanes", id);
     const alias = join(root, "caller-repo-alias");
     symlinkSync(repo, alias);
-    mkdirSync(dir, { recursive: true });
     try {
       for (const worktree of [repo, alias]) {
+        mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, "state.json"), JSON.stringify({
           id, to: "codex", repo, base: "HEAD", branch, worktree, status: "unavailable", changed: false,
           usage: {}, started: "", ended: "", channel: "orca", orca: { selector: `id:fake::${repo}` },
         }));
-        expect(laneGc(id)).toContain(`kept ${id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
-        expect(existsSync(join(dir, "state.json"))).toBe(true);
+        expect(laneGc(id)).toContain(`forgot ${id} (worktree is the caller repo: lane record removed, repo, branch and Orca entry untouched)`);
+        expect(existsSync(dir)).toBe(false);
         expect(existsSync(repo)).toBe(true);
         expect(sh(repo, "git branch --show-current").stdout.trim()).toBe(branch);
       }

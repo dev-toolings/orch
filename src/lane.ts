@@ -67,8 +67,12 @@ function resolvedPath(path: string): string {
   return existsSync(path) ? realpathSync(path) : resolve(path);
 }
 
+const CALLER_REPO = "caller_repo";
+
 function refuseRepoPath(repo: string, path: string): void {
-  if (resolvedPath(path) === resolvedPath(repo)) throw new Error("Orca worktree resolves to the caller repo; refusing to use or remove it");
+  if (resolvedPath(path) === resolvedPath(repo)) {
+    throw Object.assign(new Error("Orca worktree resolves to the caller repo; refusing to use or remove it"), { code: CALLER_REPO });
+  }
 }
 
 function assertOrcaWorktree(repo: string, path: string): void {
@@ -578,6 +582,11 @@ export function listLanes(): LaneState[] {
   });
 }
 
+function forgetCallerRepoLane(s: LaneState, out: string[]): void {
+  rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
+  out.push(`forgot ${s.id} (worktree is the caller repo: lane record removed, repo, branch and Orca entry untouched)`);
+}
+
 // Removes only what a lane created, and only once nothing is lost: the branch
 // is integrated, its patch reverses cleanly from the repo tree, or it produced no change.
 export function laneGc(drop?: string): string[] {
@@ -596,6 +605,13 @@ export function laneGc(drop?: string): string[] {
   for (const s of listLanes()) {
     if (s.status === "running" && alive(s.pid)) {
       out.push(`kept ${s.id} (running)`);
+      continue;
+    }
+    // A record whose worktree is the caller repo owns nothing removable: the
+    // checkout, its branch and any Orca entry for it belong to the operator.
+    // Forget the record only, so it never needs a manual rm.
+    if (resolvedPath(s.worktree) === resolvedPath(s.repo)) {
+      forgetCallerRepoLane(s, out);
       continue;
     }
     // Config-independent status (untracked files and submodules always
@@ -622,7 +638,8 @@ export function laneGc(drop?: string): string[] {
     if (s.orca) {
       try { removeOrca(s); }
       catch (e) {
-        out.push(`kept ${s.id} (${(e as Error).message})`);
+        if ((e as { code?: string }).code === CALLER_REPO) forgetCallerRepoLane(s, out);
+        else out.push(`kept ${s.id} (${(e as Error).message})`);
         continue;
       }
     } else if (existsSync(s.worktree) && !git(s.repo, "worktree", "remove", "--force", s.worktree).ok) {
