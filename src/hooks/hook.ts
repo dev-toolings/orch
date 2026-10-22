@@ -351,7 +351,7 @@ function stop(input: Record<string, unknown>, session: string | null, env: NodeJ
   if (!fresh.length) return "";
   state.blockedLaneSets.push(fresh.map((lane) => lane.id));
   const lane = fresh[0];
-  const reason = `Lane ${lane.id} is ${lane.status} and not integrated: apply its INTEGRATE line or run lane gc --drop ${lane.id}.`;
+  const reason = `Lane ${lane.id} is ${lane.status} and not integrated: run lane integrate ${lane.id} (or apply its INTEGRATE line), or drop it with lane gc --drop ${lane.id}.`;
   return JSON.stringify({ decision: "block", reason });
 }
 
