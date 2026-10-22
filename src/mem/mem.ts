@@ -259,11 +259,12 @@ export function forgetNote(id: string, reason: string, caller: Caller, opts: { s
   return rewritten;
 }
 
-// One line per note: enough to decide whether to `show` it.
-export function formatLine(n: Note): string {
+// One line per note: enough to decide whether to `show` it. The badge is the
+// note's standing from `orch mem outcome` signals, when it has one.
+export function formatLine(n: Note, badge?: string): string {
   const first = n.body.split("\n")[0];
   const status = !isActive(n) ? (n.status === "superseded" ? ` [superseded by ${n.supersededBy ?? "unknown"}]` : " [forgotten]") : "";
-  return `${n.id}  ${n.date.slice(0, 10)}  ${n.scope.padEnd(8)}  ${n.harness.padEnd(7)}  ${first.length > 80 ? `${first.slice(0, 77)}...` : first}${status}`;
+  return `${n.id}  ${n.date.slice(0, 10)}  ${n.scope.padEnd(8)}  ${n.harness.padEnd(7)}  ${first.length > 80 ? `${first.slice(0, 77)}...` : first}${status}${badge ? ` ${badge}` : ""}`;
 }
 
 export function formatNote(n: Note): string {
@@ -277,4 +278,4 @@ export function formatNote(n: Note): string {
 }
 
 export const MEM_USAGE =
-  "usage: orch mem add [--scope operator|project|lead] [--tags a,b (3 to 6 words to ask it by, not in the text)] <text|-> | search <words> [--scope s] [--limit n] [--all] | recent [--scope s] [--limit n] [--all] | review [--scope s] [--limit n] | show <id> | supersede <id> [--tags a,b] <text|-> | forget <id> [--reason text]";
+  "usage: orch mem add [--scope operator|project|lead] [--tags a,b (3 to 6 words to ask it by, not in the text)] <text|-> | search <words> [--scope s] [--limit n] [--all] | recent [--scope s] [--limit n] [--all] | review [--scope s] [--limit n] | show <id> | supersede <id> [--tags a,b] <text|-> | forget <id> [--reason text] | outcome <id> useful|dead_end [--why text] | reflect [--scope s] [--limit n] [--half-life-days n] | graph [--scope s] [--all] [--out file.html]";

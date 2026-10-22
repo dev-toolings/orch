@@ -139,7 +139,9 @@ describe("lead lifecycle hooks", () => {
     addLane(repo, "a", "per-lane");
     addLane(repo, "b", "per-lane");
     const input = { session_id: "per-lane" };
-    expect(JSON.parse(await runHook("stop", "claude", input, env("per-lane"))).decision).toBe("block");
+    const blocked = JSON.parse(await runHook("stop", "claude", input, env("per-lane")));
+    expect(blocked.decision).toBe("block");
+    expect(blocked.reason).toContain("lane integrate b");
     rmSync(join(state, "lanes", "a"), { recursive: true, force: true }); // a integrated, b still pending
     expect(await runHook("stop", "claude", input, env("per-lane"))).toBe("");
     addLane(repo, "c", "per-lane");

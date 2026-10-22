@@ -7,7 +7,7 @@ dépendance externe. Plan :
 
 ```text
 .------------------------------------.
-| lead claude|codex|grok             |
+| marius claude|codex|grok           |
 | (harness natif + profil lead)      |
 '-----------------+------------------'
                   |  petites modifs : le lead les fait
@@ -30,15 +30,22 @@ dépendance externe. Plan :
 
 | Commande | Effet |
 |---|---|
-| `lead claude\|codex\|grok` | Ouvre une session lead (harness lancé directement) |
+| `marius claude\|codex\|grok` | Ouvre une session avec Marius, le lead (harness lancé directement) ; `lead` reste un alias |
 | `lane run --to codex --spec f` | Délègue une tâche ; worktree enfant et état visible dans Orca local si disponible ; rapport borné |
 | `lane run --to codex --spec f --channel headless` | Force le canal sans Orca |
 | `lane run --to codex --spec f --channel orca` | Demande le canal Orca ; repli headless si Orca ou son relais est indisponible |
+| `lane route --spec f` | Dit qui fait la spec (le lead si 2 fichiers ou moins ; sinon le harness le moins coûteux par lane intégrée parmi les fiables, puis le meilleur taux d'intégration, à défaut l'ordre du profil), avec quel effort (`medium` pour une spec `MECHANICAL: yes` sans risque, au moins `high` si risque ou nouvel essai d'une spec déjà en échec) et si une revue `--risk high` est due ; aucun appel de modèle |
+| `lane auto --spec f` | Route, lance la lane, puis passe le gate d'intégration ; s'arrête au premier point qui demande le lead |
+| `lane integrate <id>` | Gate : VERIFY vert, fichiers touchés tous dans FILES, dernière revue enregistrée `ship` si la spec est risquée, branche de feature ; applique sans commit puis nettoie la lane, sinon refuse avec la raison (journalisée) |
+| `lane review --lane <id>` | Revue de la branche d'une lane dans un checkout jetable ; le verdict (`ship`, `fix-first`, `rethink`) est journalisé pour le gate |
+| `--model m`, `--effort e` | Sur `run`, `auto`, `review` et `ask` : épinglent le modèle et l'effort pour cet appel, sans toucher au profil |
 | `lane review --base <ref> --goal "..."` | Revue croisée lecture seule (sur risque) |
-| `lane status`, `lane gc` | Liste aussi les lanes en cours ; supprime les branches intégrées ou vides et termine les nettoyages Orca restés en attente |
+| `lane status`, `lane gc` | Liste aussi les lanes en cours et les lanes orphelines (dossier sans `state.json`) ; supprime les branches intégrées ou vides, les orphelines sans worktree, et termine les nettoyages Orca restés en attente. Une orpheline avec worktree reste jusqu'à `lane gc --drop <id>` |
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
 | `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |
 | `orch mem add\|search\|recent\|review\|show` | Mémoire du lead : notes Markdown, rappel à la demande ; `review` liste les notes proches |
+| `orch mem graph [--scope s] [--all] [--out f.html]` | Écrit le graphe des notes en un seul fichier HTML et affiche son URL `file://` |
+| `orch mem outcome <id> useful\|dead_end [--why ...]`, `orch mem reflect` | Retour d'usage sur une note rappelée ; `reflect` liste les notes fiables, les impasses et les corrections |
 | `orch docs update\|status\|search` | Corpus local de docs officielles, indexé par `ctx`, consulté à la demande |
 | `make check` | Typecheck, tests, matrice d'équivalence niveaux 0 à 2 |
 | `make smoke` | Lanes réelles vers codex, grok et claude : tâche complète + sondes de confinement (écriture `$HOME`, réseau, lane imbriquée) + décisions de la règle du lead Codex. Payant (~450k tokens, surtout en cache) : à lancer après tout changement de la façon dont les workers démarrent |
@@ -57,8 +64,9 @@ suppression asynchrone est encore en cours : relancer `lane gc` après sa fin.
 
 ## Fichiers installés (`orch install`)
 
-`~/.claude/agents/lead.md`, `~/.grok/agents/lead.md`,
+`~/.claude/agents/marius.md`, `~/.grok/agents/marius.md`,
 `~/.grok/agents/lead-explore.md`, `~/.local/bin/lane`, `~/.local/bin/lead`,
+`~/.local/bin/marius`,
 `~/.local/bin/orch`, `~/.codex/rules/orch.rules`.
 Codex ne reçoit pas de fichier d'agent : `lead codex` passe le prompt lead en
 `developer_instructions` au lancement. La règle `orch.rules` laisse un lead
@@ -111,3 +119,28 @@ harness) : aucun doublon évité, 11 à 74 % de tokens en plus par session
 d'écriture ; il a été retiré. `bun scripts/mem-dedup-replay.ts` rejoue la
 détection en lecture seule sur les vraies notes ; le corpus étiqueté de
 `tests/fixtures/mem-dedup/` en fixe le rappel dans `make check`.
+
+`orch mem outcome <id> useful|dead_end [--why "..."]` note comment une note
+rappelée a tenu à l'usage. Les signaux vont dans un seul fichier en ajout seul,
+`~/.local/state/orch/mem/outcomes.jsonl`, jamais dans les notes : une note
+projet versionnée ne bouge pas quand on l'utilise. Chaque signal compte +1 ou
+-1 et son poids est divisé par deux tous les 30 jours (`--half-life-days`).
+Une note devient fiable (`trusted`) une fois utile dans 2 sessions
+distinctes ; utile et impasse à la fois, elle est contestée. `search` et
+`recent` ajoutent ce statut en fin de ligne ; `orch mem reflect` liste les
+notes fiables, à confirmer, contestées, les impasses avec leur raison, et les
+dernières corrections (`supersede`). Sans modèle, à la demande. Formule reprise
+de `graphify reflect` (Graphify-Labs/graphify, Apache-2.0), réécrite en
+TypeScript.
+
+`orch mem graph` dessine les notes lisibles et leurs liens dans
+`~/.local/state/orch/mem/graph.html` (mode 600, écrasé à chaque appel, ou
+`--out`) et affiche son URL `file://`. Un seul fichier, script inline, sans CDN
+ni serveur. Les liens viennent des notes, sans modèle : une flèche par
+`supersede` (avec `--all`), un trait par tag partagé (sauf un tag porté par
+plus de 10 notes, qui ne relie rien), un pointillé par paire proche de
+`similar.ts`. La page est un graphe vivant en canvas, façon Obsidian :
+simulation de forces, glisser une note, survol qui allume ses voisines,
+libellés qui apparaissent au zoom, tags et portées affichables comme nœuds
+(cases à cocher). Couleur par portée, anneau par statut `outcome`, filtre et
+clic pour lire la note. Idée reprise du `graph.html` de graphify.

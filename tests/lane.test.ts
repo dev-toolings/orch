@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { laneAsk, laneGc, laneReview, laneRun, listLanes, resolveReviewer, setupCommand } from "../src/lane.ts";
+import { laneAsk, laneGc, laneReview, laneRun, listLanes, listOrphans, resolveReviewer, setupCommand } from "../src/lane.ts";
 import { bound } from "../src/core/output.ts";
 import { laneReport } from "../src/lanes/report.ts";
 import { SNAPSHOT_LIMITS, statusPaths } from "../src/lanes/worktree.ts";
@@ -273,9 +273,13 @@ describe("Orca lane channel", () => {
       failed = listLanes().find(s => report.includes(`ID: ${s.id}\n`));
       expect(failed).toBeDefined();
       // A lost create reply is recovered by name during gc. That recovery
-      // must not turn a rejected caller checkout into a removal target.
+      // must not turn a rejected caller checkout into a removal target: gc
+      // forgets the record and leaves the checkout and its branch alone.
       if (mode === "repo-path" || mode === "repo-alias") {
-        expect(laneGc(failed!.id)).toContain(`kept ${failed!.id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
+        expect(laneGc(failed!.id)).toContain(`forgot ${failed!.id} (worktree is the caller repo: lane record removed, repo, branch and Orca entry untouched)`);
+        expect(listLanes().some(s => s.id === failed!.id)).toBe(false);
+        expect(existsSync(repo)).toBe(true);
+        expect(sh(repo, "git branch --show-current").stdout).toBe(branch);
       }
       const calls = readFileSync(join(root, "orca-calls"), "utf8").slice(before.length);
       expect(calls).toContain('["worktree","create"');
@@ -287,7 +291,7 @@ describe("Orca lane channel", () => {
     }
   });
 
-  test("gc retains a lane pointing at its repo, including a symlink alias, without Orca removal", () => {
+  test("gc forgets a lane pointing at its repo, including a symlink alias, without touching the repo or Orca", () => {
     fakeOrca();
     const before = readFileSync(join(root, "orca-calls"), "utf8");
     const branch = sh(repo, "git branch --show-current").stdout.trim();
@@ -295,15 +299,15 @@ describe("Orca lane channel", () => {
     const dir = join(process.env.ORCH_STATE!, "lanes", id);
     const alias = join(root, "caller-repo-alias");
     symlinkSync(repo, alias);
-    mkdirSync(dir, { recursive: true });
     try {
       for (const worktree of [repo, alias]) {
+        mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, "state.json"), JSON.stringify({
           id, to: "codex", repo, base: "HEAD", branch, worktree, status: "unavailable", changed: false,
           usage: {}, started: "", ended: "", channel: "orca", orca: { selector: `id:fake::${repo}` },
         }));
-        expect(laneGc(id)).toContain(`kept ${id} (Orca worktree resolves to the caller repo; refusing to use or remove it)`);
-        expect(existsSync(join(dir, "state.json"))).toBe(true);
+        expect(laneGc(id)).toContain(`forgot ${id} (worktree is the caller repo: lane record removed, repo, branch and Orca entry untouched)`);
+        expect(existsSync(dir)).toBe(false);
         expect(existsSync(repo)).toBe(true);
         expect(sh(repo, "git branch --show-current").stdout.trim()).toBe(branch);
       }
@@ -604,6 +608,41 @@ describe("gc", () => {
     expect(output).toContain(`kept ${pending.state!.id} (complete, not integrated)`);
     expect(readFileSync(join(r, "applied.txt"), "utf8")).toBe("integrated\n");
     expect(readFileSync(join(r, "unrelated.txt"), "utf8")).toBe("extra change\n");
+  });
+
+  test("lists a lane directory without a record and removes its work only on --drop", () => {
+    const r = join(root, "gc-orphan");
+    mkdirSync(r);
+    sh(r, "git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init");
+    const lanes = join(process.env.ORCH_STATE!, "lanes");
+    const dead = spawnSync("true").pid;
+    const id = `20261020144735-codex-${dead}-orph`;
+    const dir = join(lanes, id);
+    mkdirSync(dir, { recursive: true });
+    sh(r, `git worktree add -q -b lane/${id} ${join(dir, "wt")}`);
+    writeFileSync(join(dir, "wt", "work.txt"), "worker result\n");
+    const logsOnly = join(lanes, `20261020104932-codex-${dead}-logs`);
+    mkdirSync(logsOnly);
+    const starting = join(lanes, `20261022000000-codex-${process.pid}-live`);
+    mkdirSync(starting);
+    try {
+      const orphan = listOrphans().find((o) => o.id === id);
+      expect(orphan).toMatchObject({ worktree: true, repo: sh(r, "pwd -P").stdout.trim(), dirty: 1 });
+      expect(listOrphans().some((o) => starting.endsWith(o.id))).toBe(false);
+
+      const output = laneGc();
+      expect(output.some((l) => l.startsWith(`kept orphan ${id} (no lane record`))).toBe(true);
+      expect(output.some((l) => l.startsWith("removed orphan 20261020104932-codex-") && l.endsWith("(logs only)"))).toBe(true);
+      expect(readFileSync(join(dir, "wt", "work.txt"), "utf8")).toBe("worker result\n");
+      expect(existsSync(starting)).toBe(true);
+
+      expect(laneGc(id)).toContain(`removed orphan ${id}`);
+      expect(existsSync(dir)).toBe(false);
+      expect(sh(r, `git branch --list lane/${id}`).stdout.trim()).toBe("");
+      expect(sh(r, "git worktree list --porcelain").stdout).not.toContain(id);
+    } finally {
+      rmSync(starting, { recursive: true, force: true });
+    }
   });
 });
 

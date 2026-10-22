@@ -16,11 +16,20 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   environment beyond that allowlist. A finished lane cuts its clean worktree
   (and its Orca terminals) at once and keeps only its branch; GC drops the
   branch once integrated and retries any cleanup Orca did not confirm.
+- `src/lanes/ledger.ts` appends one line per finished lane run and per closed
+  lane (integrated, dropped, no change) to `lanes.jsonl` under the state dir.
+  `src/lanes/route.ts` backs `lane route` and `lane auto`: spec features
+  (FILES, stacks, risk) plus that ledger pick the lead itself or a harness,
+  with no model call; it also picks the effort and, once a record is long and
+  reliable, the cheapest harness per integrated lane. `lane integrate` is the
+  gate: VERIFY passed, every touched file in FILES, a recorded `ship` review
+  for a risky spec (`lane review --lane <id>`), a feature branch; else nothing
+  moves and the refusal is logged.
 - `src/orch.ts` installs only what `src/install/render.ts` lists and records it in a
   manifest; it renders targets only for detected harnesses. Uninstall removes
   exactly that and keeps edited files.
 - `src/lead.ts` starts the harness binary directly with the lead profile:
-  `--agent lead` for Claude and Grok, one `developer_instructions` for Codex.
+  `--agent marius` for Claude and Grok, one `developer_instructions` for Codex.
   It sets `ORCH_LEAD=1` and `ORCH_HARNESS`; that is how `orch mem` tells a
   lead session from a plain one.
 - `src/hooks/` serves lead lifecycle hooks for bash input, edit counting,
@@ -42,6 +51,15 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   was benched on 2026-10-21: no gain, more tokens. `tests/fixtures/mem-dedup`
   pins its recall; `scripts/mem-dedup-replay.ts` replays it read-only on
   real stores before any threshold change.
+- `src/mem/outcome.ts` backs `orch mem outcome` and `orch mem reflect`: use
+  signals (useful, dead_end) in one append-only `mem/outcomes.jsonl` under the
+  state dir, never in the notes; signed, halving every 30 days, trusted only
+  from 2 sessions (idea from graphify reflect, Apache-2.0). No model call.
+- `src/mem/graph.ts` backs `orch mem graph`: nodes and links computed in
+  TypeScript (supersede, shared tags under a hub cap, similar.ts pairs; no
+  model), rendered as one self-contained HTML file (canvas force graph, tag
+  and scope nodes derived in the page) with its `file://` URL.
+  Tests cover the computation and the script escaping, never the page.
 - `scripts/orca-run-teardown.sh` closes an Orca Run (worktrees, setup
   terminals, merged branches); the `operator-delegation` skill points here.
 - `src/docs/docs.ts` keeps a local docs corpus declared in `catalog/docs.yaml`
