@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-// lead <claude|codex|grok> [harness args...]: start the harness directly with
-// the lead profile. Claude and Grok select the installed lead agent; Codex has
-// no agent file, so the lead prompt goes in as developer_instructions. The
+// lead|marius <claude|codex|grok> [harness args...]: start the harness directly with
+// the lead profile. Claude and Grok select the installed marius agent (the name
+// both show in their UI); Codex has no agent file, so the lead prompt goes in as
+// developer_instructions. The
 // session gets ORCH_LEAD and ORCH_HARNESS so `orch mem` knows who writes.
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -48,7 +49,7 @@ export function leadArgv(h: Harness, profileName?: string, extra: string[] = [])
     if (choice.permission_mode === "yolo" && !chosen) out.push("--dangerously-bypass-approvals-and-sandbox");
     return out;
   }
-  const out = [h, "--agent", "lead"];
+  const out = [h, "--agent", "marius"];
   if (h === "claude") {
     out.push("--settings", join(process.env.HOME ?? homedir(), ".claude", "orch", "lead-settings.json"));
     if (choice.model) out.push("--model", choice.model);
@@ -81,7 +82,7 @@ if (import.meta.main) {
   }
   const [h, ...rest] = process.argv.slice(2);
   if (!(HARNESSES as string[]).includes(h)) {
-    console.error("usage: lead claude|codex|grok [harness args...]");
+    console.error("usage: marius|lead claude|codex|grok [harness args...]");
     process.exit(2);
   }
   const unavailable = leadAvailability(h as Harness);

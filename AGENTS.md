@@ -20,7 +20,7 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   manifest; it renders targets only for detected harnesses. Uninstall removes
   exactly that and keeps edited files.
 - `src/lead.ts` starts the harness binary directly with the lead profile:
-  `--agent lead` for Claude and Grok, one `developer_instructions` for Codex.
+  `--agent marius` for Claude and Grok, one `developer_instructions` for Codex.
   It sets `ORCH_LEAD=1` and `ORCH_HARNESS`; that is how `orch mem` tells a
   lead session from a plain one.
 - `src/hooks/` serves lead lifecycle hooks for bash input, edit counting,

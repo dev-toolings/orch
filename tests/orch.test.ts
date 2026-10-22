@@ -61,9 +61,9 @@ describe("render", () => {
 
   test("Claude lead pins the profile model, Grok files never do", () => {
     const by = Object.fromEntries(targets.map((t) => [t.path, t.content]));
-    expect(by[".claude/agents/lead.md"]).toContain("model: opus");
-    expect(by[".claude/agents/lead.md"]).toContain("effort: high");
-    expect(by[".grok/agents/lead.md"]).not.toMatch(/^model:/m);
+    expect(by[".claude/agents/marius.md"]).toContain("model: opus");
+    expect(by[".claude/agents/marius.md"]).toContain("effort: high");
+    expect(by[".grok/agents/marius.md"]).not.toMatch(/^model:/m);
     expect(by[".grok/agents/lead-explore.md"]).not.toMatch(/^model:/m);
     // Codex gets no agent file, only the exec-policy rule for lane and orch.
     expect(targets.filter((t) => t.path.startsWith(".codex/")).map((t) => t.path)).toEqual([".codex/rules/orch.rules"]);
@@ -71,15 +71,24 @@ describe("render", () => {
     expect(by[".grok/hooks/orch-lead.json"]).toContain('"run_terminal_command"');
   });
 
-  test("renders only detected harness targets and always keeps the three bin links", () => {
+  test("renders only detected harness targets and always keeps the bin links", () => {
     const claude = render(profile, ["claude"]);
     expect(claude.some((target) => target.path.startsWith(".grok/") || target.path.startsWith(".codex/"))).toBe(false);
     expect(claude.filter((target) => target.path.startsWith(".local/bin/")).map((target) => target.path)).toEqual([
-      ".local/bin/lane", ".local/bin/lead", ".local/bin/orch",
+      ".local/bin/lane", ".local/bin/lead", ".local/bin/marius", ".local/bin/orch",
     ]);
     const codex = render(profile, ["codex"]);
     expect(codex.some((target) => target.path.startsWith(".claude/") || target.path.startsWith(".grok/"))).toBe(false);
     expect(codex.filter((target) => target.harness).every((target) => target.harness === "codex")).toBe(true);
+  });
+
+  test("package bin map matches the installed bin links", () => {
+    const root = join(import.meta.dir, "..");
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { bin: Record<string, string> };
+    const links = render(profile, ["claude"]).filter((target) => target.path.startsWith(".local/bin/"));
+    expect(Object.fromEntries(links.map((target) => [target.path.slice(".local/bin/".length), target.content]))).toEqual(
+      Object.fromEntries(Object.entries(pkg.bin).map(([name, path]) => [name, join(root, path)])),
+    );
   });
 
   test("install detects harnesses, honors --harness, and adds targets for a newly installed CLI", () => {
@@ -88,7 +97,7 @@ describe("render", () => {
     const first = runInstall(root, bin, ["--no-system-deps"]);
     expect(first.status).toBe(0);
     expect(first.stdout).toContain("harnesses: claude\n");
-    expect(existsSync(join(root, "home", ".claude", "agents", "lead.md"))).toBe(true);
+    expect(existsSync(join(root, "home", ".claude", "agents", "marius.md"))).toBe(true);
     expect(existsSync(join(root, "home", ".codex", "rules", "orch.rules"))).toBe(false);
     expect(existsSync(join(root, "home", ".local", "bin", "orch"))).toBe(true);
 
@@ -109,7 +118,7 @@ describe("render", () => {
     const overridden = runInstall(overrideRoot, overrideBin, ["--dry-run", "--no-system-deps", "--harness", "claude,codex"]);
     expect(overridden.status).toBe(0);
     expect(overridden.stdout).toContain("harnesses: claude, codex\n");
-    expect(overridden.stdout).toContain("~/.claude/agents/lead.md");
+    expect(overridden.stdout).toContain("~/.claude/agents/marius.md");
     expect(overridden.stdout).toContain("~/.codex/rules/orch.rules");
     expect(overridden.stdout).not.toContain("~/.grok/");
     rmSync(overrideRoot, { recursive: true, force: true });
@@ -128,23 +137,23 @@ describe("manifest", () => {
   test("a foreign file at a target path is a conflict", () => {
     const other = mkdtempSync(join(tmpdir(), "orch-foreign-"));
     mkdirSync(join(other, ".grok", "agents"), { recursive: true });
-    writeFileSync(join(other, ".grok", "agents", "lead.md"), "someone else's lead");
+    writeFileSync(join(other, ".grok", "agents", "marius.md"), "someone else's lead");
     const acts = plan(other, targets, null);
-    expect(acts.find((a) => a.path === ".grok/agents/lead.md")?.op).toBe("conflict");
+    expect(acts.find((a) => a.path === ".grok/agents/marius.md")?.op).toBe("conflict");
     expect(() => apply(other, join(other, "st"), "max20", targets, acts)).toThrow();
     rmSync(other, { recursive: true, force: true });
   });
 
   test("uninstall keeps an edited file and removes the rest", () => {
-    const edited = join(home, ".grok", "agents", "lead.md");
+    const edited = join(home, ".grok", "agents", "marius.md");
     writeFileSync(edited, "hand edit");
-    expect(drift(home, state)).toContain("edited .grok/agents/lead.md");
+    expect(drift(home, state)).toContain("edited .grok/agents/marius.md");
     const out = uninstall(home, state, false);
-    expect(out).toContain("kept .grok/agents/lead.md (edited since install)");
-    expect(existsSync(join(home, ".claude", "agents", "lead.md"))).toBe(false);
+    expect(out).toContain("kept .grok/agents/marius.md (edited since install)");
+    expect(existsSync(join(home, ".claude", "agents", "marius.md"))).toBe(false);
     expect(existsSync(join(home, ".local", "bin", "lane"))).toBe(false);
     expect(existsSync(edited)).toBe(true);
-    expect(readManifest(state)?.entries.map((e) => e.path)).toEqual([".grok/agents/lead.md"]);
+    expect(readManifest(state)?.entries.map((e) => e.path)).toEqual([".grok/agents/marius.md"]);
     expect(existsSync(join(home, ".claude", "agents", "project-auditor.md"))).toBe(true);
   });
 
@@ -181,21 +190,21 @@ describe("manifest", () => {
 
     const claudeTargets = render(profile, ["claude"]);
     const actions = plan(installHome, claudeTargets, readManifest(installState));
-    expect(actions).toContainEqual({ path: ".grok/agents/lead.md", op: "kept", reason: "harness absent" });
+    expect(actions).toContainEqual({ path: ".grok/agents/marius.md", op: "kept", reason: "harness absent" });
     expect(actions).toContainEqual({ path: ".codex/rules/orch.rules", op: "kept", reason: "harness absent" });
     expect(actions.filter((action) => action.op === "kept").map((action) => `kept ~/${action.path} (${action.reason})`)).toContain(
-      "kept ~/.grok/agents/lead.md (harness absent)",
+      "kept ~/.grok/agents/marius.md (harness absent)",
     );
     apply(installHome, installState, profile.name, claudeTargets, actions);
-    expect(existsSync(join(installHome, ".grok", "agents", "lead.md"))).toBe(true);
+    expect(existsSync(join(installHome, ".grok", "agents", "marius.md"))).toBe(true);
     expect(existsSync(join(installHome, ".codex", "rules", "orch.rules"))).toBe(true);
-    expect(readManifest(installState)?.entries.map((entry) => entry.path)).toContain(".grok/agents/lead.md");
+    expect(readManifest(installState)?.entries.map((entry) => entry.path)).toContain(".grok/agents/marius.md");
     const claudeDrift = drift(installHome, installState, ["claude"]);
-    expect(claudeDrift.some((line) => line.endsWith(".claude/agents/lead.md"))).toBe(true);
+    expect(claudeDrift.some((line) => line.endsWith(".claude/agents/marius.md"))).toBe(true);
     expect(claudeDrift.some((line) => line.includes(".codex/") || line.includes(".grok/"))).toBe(false);
 
     uninstall(installHome, installState, false);
-    expect(existsSync(join(installHome, ".grok", "agents", "lead.md"))).toBe(false);
+    expect(existsSync(join(installHome, ".grok", "agents", "marius.md"))).toBe(false);
     rmSync(root, { recursive: true, force: true });
   });
 });
@@ -251,12 +260,12 @@ describe("lead launch argv", () => {
 
   test("Claude and Grok select the installed lead agent", () => {
     const claude = leadArgv("claude", "max20");
-    expect(claude.slice(0, 4)).toEqual(["claude", "--agent", "lead", "--settings"]);
+    expect(claude.slice(0, 4)).toEqual(["claude", "--agent", "marius", "--settings"]);
     expect(claude[4]).toBe(join(home, ".claude", "orch", "lead-settings.json"));
     expect(claude.slice(-6)).toEqual(["--model", "opus", "--effort", "high", "--permission-mode", "bypassPermissions"]);
-    expect(leadArgv("grok", "max20")).toEqual(["grok", "--agent", "lead", "--model", "grok-4.7-build-fast", "--reasoning-effort", "high"]);
+    expect(leadArgv("grok", "max20")).toEqual(["grok", "--agent", "marius", "--model", "grok-4.7-build-fast", "--reasoning-effort", "high"]);
     // a model or effort the operator passes wins over the profile's
-    expect(leadArgv("grok", "max20", ["-m", "grok-4.7", "--effort", "low"])).toEqual(["grok", "--agent", "lead"]);
+    expect(leadArgv("grok", "max20", ["-m", "grok-4.7", "--effort", "low"])).toEqual(["grok", "--agent", "marius"]);
   });
 
   test("Codex lead configures the four lifecycle hooks inline", () => {
