@@ -182,6 +182,74 @@ describe("manifest", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  test("install and dry run report removal of unchanged retired files", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-retired-remove-"));
+    const bin = fakePath(root, ["claude"]);
+    const installHome = join(root, "home");
+    const installState = join(root, "state");
+    const retired: Target[] = [
+      { path: ".claude/agents/retired.md", kind: "file", content: "old\n", harness: "claude" },
+      { path: ".claude/agents/legacy.md", kind: "file", content: "old\n" },
+      { path: ".orch/old.txt", kind: "file", content: "old\n" },
+      { path: ".orch/gone.txt", kind: "file", content: "gone\n" },
+    ];
+    apply(installHome, installState, profile.name, retired, plan(installHome, retired, null));
+    rmSync(join(installHome, ".orch/gone.txt"));
+    const manifest = readManifest(installState);
+    const actions = plan(installHome, render(profile, ["claude"]), manifest);
+    expect(actions.some((action) => action.path === ".orch/gone.txt")).toBe(false);
+    for (const target of retired.slice(0, -1)) {
+      expect(actions).toContainEqual({ path: target.path, op: "remove" });
+    }
+
+    const dry = runInstall(root, bin, ["--dry-run", "--no-system-deps"]);
+    expect(dry.status).toBe(0);
+    expect(readManifest(installState)).toEqual(manifest);
+    for (const target of retired.slice(0, -1)) {
+      expect(dry.stdout).toContain(`remove    ~/${target.path}`);
+      expect(readFileSync(join(installHome, target.path), "utf8")).toBe(target.content);
+    }
+    const installed = runInstall(root, bin, ["--no-system-deps"]);
+    expect(installed.status).toBe(0);
+    for (const target of retired) {
+      if (target.path !== ".orch/gone.txt") expect(installed.stdout).toContain(`remove    ~/${target.path}`);
+      expect(existsSync(join(installHome, target.path))).toBe(false);
+      expect(readManifest(installState)?.entries.some((entry) => entry.path === target.path)).toBe(false);
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("install and dry run report keeping edited retired files", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-retired-edited-"));
+    const bin = fakePath(root, ["claude"]);
+    const installHome = join(root, "home");
+    const installState = join(root, "state");
+    const retired: Target[] = [
+      { path: ".claude/agents/retired.md", kind: "file", content: "old\n", harness: "claude" },
+      { path: ".claude/agents/legacy.md", kind: "file", content: "old\n" },
+      { path: ".orch/edited.txt", kind: "file", content: "old\n" },
+    ];
+    apply(installHome, installState, profile.name, retired, plan(installHome, retired, null));
+    for (const target of retired) writeFileSync(join(installHome, target.path), "hand edit\n");
+    const manifest = readManifest(installState);
+    const actions = plan(installHome, render(profile, ["claude"]), manifest);
+    for (const target of retired) {
+      expect(actions).toContainEqual({ path: target.path, op: "kept", reason: "edited since install" });
+    }
+
+    for (const args of [["--dry-run", "--no-system-deps"], ["--no-system-deps"]]) {
+      const result = runInstall(root, bin, args);
+      expect(result.status).toBe(0);
+      if (args.includes("--dry-run")) expect(readManifest(installState)).toEqual(manifest);
+      for (const target of retired) {
+        expect(result.stdout).toContain(`kept ~/${target.path} (edited since install)`);
+        expect(readFileSync(join(installHome, target.path), "utf8")).toBe("hand edit\n");
+        expect(readManifest(installState)?.entries).toContainEqual(manifest?.entries.find((entry) => entry.path === target.path));
+      }
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
   test("install keeps manifest targets for an absent harness and reports them", () => {
     const root = mkdtempSync(join(tmpdir(), "orch-absent-"));
     const installHome = join(root, "home");
