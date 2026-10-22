@@ -61,7 +61,7 @@ const checks: Record<string, () => boolean> = {
   // report bound comes from the profile and is small
   T03: () => loadProfile().limits.report_max_bytes <= 4096 && loadProfile("lean").limits.report_max_bytes <= 4096,
   // the cheaper profile really is cheaper for workers
-  PW62: () => loadProfile("lean").lanes.codex.effort !== loadProfile("max20").lanes.codex.effort && render(loadProfile("lean")).length > 0,
+  PW62: () => loadProfile("lean").lanes.codex.effort !== loadProfile("max20").lanes.codex.effort && render(loadProfile("lean"), ["claude", "codex", "grok"]).length > 0,
 };
 
 const { values } = parseArgs({ args: process.argv.slice(2), options: { level: { type: "string" } } });

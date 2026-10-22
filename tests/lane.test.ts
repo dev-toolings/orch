@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { laneAsk, laneGc, laneReview, laneRun, listLanes, setupCommand } from "../src/lane.ts";
+import { laneAsk, laneGc, laneReview, laneRun, listLanes, resolveReviewer, setupCommand } from "../src/lane.ts";
 import { bound } from "../src/core/output.ts";
 import { laneReport } from "../src/lanes/report.ts";
 import { SNAPSHOT_LIMITS, statusPaths } from "../src/lanes/worktree.ts";
@@ -37,7 +37,11 @@ function sh(cwd: string, cmd: string) {
 
 // Fake harness binary: its behavior is baked into the script.
 function fake(name: string, body: string) {
-  const p = join(bin, name);
+  fakeAt(bin, name, body);
+}
+
+function fakeAt(targetBin: string, name: string, body: string) {
+  const p = join(targetBin, name);
   writeFileSync(p, `#!/bin/sh\ncat >/dev/null 2>&1\n${body}\n`);
   chmodSync(p, 0o755);
 }
@@ -427,8 +431,10 @@ describe("lane run classes", () => {
 
   test("unavailable: harness binary missing", async () => {
     rmSync(join(bin, "claude"), { force: true });
-    const { state } = await laneRun({ to: "claude", specPath: spec("true"), repo, profile });
-    expect(state?.status).toBe("unavailable");
+    const { report, state } = await laneRun({ to: "claude", specPath: spec("true"), repo, profile });
+    expect(state).toBeUndefined();
+    expect(report).toContain("STATUS: unavailable");
+    expect(report).toContain("claude is not installed (installed:");
   });
 
   test("timeout: the whole process group is stopped", async () => {
@@ -736,6 +742,21 @@ test("review --to takes the model of an entry aimed at that harness, never anoth
   expect(readFileSync(argvFile, "utf8")).not.toContain("opus");
 });
 
+test("an explicit same-family reviewer is reported when another harness is installed", async () => {
+  const isolatedBin = join(root, "review-explicit-same-family-bin");
+  mkdirSync(isolatedBin);
+  fakeAt(isolatedBin, "claude", `echo '{"result":"reviewed"}'`);
+  fakeAt(isolatedBin, "codex", "true");
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${isolatedBin}:/usr/bin:/bin`;
+  try {
+    const report = await laneReview({ from: "claude", to: "claude", base: "HEAD", goal: "review", repo, profile });
+    expect(report).toContain("REVIEWER: claude · opus · effort high · risk normal (same family: explicit --to)");
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 test("review risk picks the reviewer: normal is the base choice, high its override", async () => {
   const argvFile = join(root, "review-argv");
   fake("codex", `echo "$@" > ${argvFile}`);
@@ -745,6 +766,64 @@ test("review risk picks the reviewer: normal is the base choice, high its overri
   const high = await laneReview({ from: "claude", base: "HEAD", goal: "review", repo, profile, risk: "high" });
   expect(high).toContain("REVIEWER: codex · gpt-6.1-sol · effort medium · risk high");
   expect(readFileSync(argvFile, "utf8")).toContain("gpt-6.1-sol");
+});
+
+test("review falls back to an installed harness and uses the lead family only when alone", async () => {
+  const isolatedBin = join(root, "review-fallback-bin");
+  mkdirSync(isolatedBin);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${isolatedBin}:/usr/bin:/bin`;
+  try {
+    fakeAt(isolatedBin, "grok", `echo '{"result":"reviewed"}'`);
+    const fallback = await laneReview({ from: "claude", base: "HEAD", goal: "review", repo, profile });
+    expect(fallback).toContain("REVIEWER: grok · grok-4.7-build-fast");
+    expect(fallback).toContain("(fallback: codex not installed)");
+
+    rmSync(join(isolatedBin, "grok"));
+    fakeAt(isolatedBin, "claude", `echo '{"result":"same-family review"}'`);
+    const sameFamily = await laneReview({ from: "claude", base: "HEAD", goal: "review", repo, profile });
+    expect(sameFamily).toContain("REVIEWER: claude · opus");
+    expect(sameFamily).toContain("(same family: no other harness installed)");
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test("high risk uses the override for the resolved fallback harness", () => {
+  const targetProfile: Profile = {
+    ...profile,
+    review: {
+      ...profile.review,
+      grok: { to: "grok", model: "grok-review", high: { model: "grok-review-high" } },
+    },
+  };
+  const resolved = resolveReviewer("claude", targetProfile, { risk: "high" }, (binName) => binName === "grok");
+  expect(resolved).toEqual({
+    to: "grok",
+    choice: { model: "grok-review-high" },
+    note: "fallback: codex not installed",
+  });
+});
+
+test("lane run reports unavailable worker binaries with installed list", async () => {
+  const isolatedBin = join(root, "missing-worker-bin");
+  mkdirSync(isolatedBin);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${isolatedBin}:/usr/bin:/bin`;
+  try {
+    fakeAt(isolatedBin, "claude", "true");
+    const missing = await laneRun({ to: "grok", specPath: spec("true"), repo, profile });
+    expect(missing.report).toContain("STATUS: unavailable");
+    expect(missing.report).toContain("REASON: grok is not installed (installed: claude)");
+    const cli = spawnSync(process.execPath, ["src/lane.ts", "run", "--to", "grok", "--spec", spec("true")], {
+      cwd: join(import.meta.dir, ".."), encoding: "utf8", env: process.env,
+    });
+    expect(cli.status).toBe(0);
+    expect(cli.stdout).toContain("STATUS: unavailable");
+    expect(cli.stdout).toContain("REASON: grok is not installed (installed: claude)");
+  } finally {
+    process.env.PATH = previousPath;
+  }
 });
 
 describe("snapshot and setup hardening (review findings)", () => {

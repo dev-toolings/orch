@@ -17,7 +17,8 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   (and its Orca terminals) at once and keeps only its branch; GC drops the
   branch once integrated and retries any cleanup Orca did not confirm.
 - `src/orch.ts` installs only what `src/install/render.ts` lists and records it in a
-  manifest; uninstall removes exactly that and keeps edited files.
+  manifest; it renders targets only for detected harnesses. Uninstall removes
+  exactly that and keeps edited files.
 - `src/lead.ts` starts the harness binary directly with the lead profile:
   `--agent lead` for Claude and Grok, one `developer_instructions` for Codex.
   It sets `ORCH_LEAD=1` and `ORCH_HARNESS`; that is how `orch mem` tells a

@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { leadArgv, leadGuard } from "../src/lead.ts";
+import { leadArgv, leadAvailability, leadGuard } from "../src/lead.ts";
 import { apply, drift, plan, readManifest, uninstall } from "../src/install/manifest.ts";
 import { loadProfile } from "../src/core/profile.ts";
 import { leadPrompt, render, type Target } from "../src/install/render.ts";
@@ -12,7 +13,29 @@ import { CLAUDE_SANDBOX, workerArgv } from "../src/harness/harness.ts";
 let home: string;
 let state: string;
 let originalHome: string | undefined;
-const targets = render(loadProfile("max20"));
+const profile = loadProfile("max20");
+const targets = render(profile, ["claude", "codex", "grok"]);
+
+function fakePath(root: string, harnesses: string[]): string {
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  symlinkSync("/bin/sh", join(bin, "sh"));
+  for (const harness of harnesses) symlinkSync("/bin/true", join(bin, harness));
+  return bin;
+}
+
+function runInstall(root: string, bin: string, args: string[] = []) {
+  return spawnSync(process.execPath, [join(import.meta.dir, "../src/orch.ts"), "install", ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: join(root, "home"),
+      ORCH_HOME: join(root, "home"),
+      ORCH_STATE: join(root, "state"),
+      PATH: bin,
+    },
+  });
+}
 
 beforeAll(() => {
   const root = mkdtempSync(join(tmpdir(), "orch-test-"));
@@ -46,6 +69,50 @@ describe("render", () => {
     expect(targets.filter((t) => t.path.startsWith(".codex/")).map((t) => t.path)).toEqual([".codex/rules/orch.rules"]);
     expect(by[".claude/orch/lead-settings.json"]).toContain('"UserPromptSubmit"');
     expect(by[".grok/hooks/orch-lead.json"]).toContain('"run_terminal_command"');
+  });
+
+  test("renders only detected harness targets and always keeps the three bin links", () => {
+    const claude = render(profile, ["claude"]);
+    expect(claude.some((target) => target.path.startsWith(".grok/") || target.path.startsWith(".codex/"))).toBe(false);
+    expect(claude.filter((target) => target.path.startsWith(".local/bin/")).map((target) => target.path)).toEqual([
+      ".local/bin/lane", ".local/bin/lead", ".local/bin/orch",
+    ]);
+    const codex = render(profile, ["codex"]);
+    expect(codex.some((target) => target.path.startsWith(".claude/") || target.path.startsWith(".grok/"))).toBe(false);
+    expect(codex.filter((target) => target.harness).every((target) => target.harness === "codex")).toBe(true);
+  });
+
+  test("install detects harnesses, honors --harness, and adds targets for a newly installed CLI", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-detect-"));
+    const bin = fakePath(root, ["claude"]);
+    const first = runInstall(root, bin, ["--no-system-deps"]);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toContain("harnesses: claude\n");
+    expect(existsSync(join(root, "home", ".claude", "agents", "lead.md"))).toBe(true);
+    expect(existsSync(join(root, "home", ".codex", "rules", "orch.rules"))).toBe(false);
+    expect(existsSync(join(root, "home", ".local", "bin", "orch"))).toBe(true);
+
+    symlinkSync("/bin/true", join(bin, "codex"));
+    const second = runInstall(root, bin, ["--no-system-deps"]);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain("harnesses: claude, codex\n");
+    expect(existsSync(join(root, "home", ".codex", "rules", "orch.rules"))).toBe(true);
+    rmSync(join(bin, "codex"));
+    const third = runInstall(root, bin, ["--no-system-deps"]);
+    expect(third.status).toBe(0);
+    expect(third.stdout).toContain("kept ~/.codex/rules/orch.rules (harness absent)");
+    expect(existsSync(join(root, "home", ".codex", "rules", "orch.rules"))).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+
+    const overrideRoot = mkdtempSync(join(tmpdir(), "orch-override-"));
+    const overrideBin = fakePath(overrideRoot, ["grok"]);
+    const overridden = runInstall(overrideRoot, overrideBin, ["--dry-run", "--no-system-deps", "--harness", "claude,codex"]);
+    expect(overridden.status).toBe(0);
+    expect(overridden.stdout).toContain("harnesses: claude, codex\n");
+    expect(overridden.stdout).toContain("~/.claude/agents/lead.md");
+    expect(overridden.stdout).toContain("~/.codex/rules/orch.rules");
+    expect(overridden.stdout).not.toContain("~/.grok/");
+    rmSync(overrideRoot, { recursive: true, force: true });
   });
 });
 
@@ -105,12 +172,55 @@ describe("manifest", () => {
     expect(existsSync(join(upgradeHome, ".orch/edited.txt"))).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
+
+  test("install keeps manifest targets for an absent harness and reports them", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-absent-"));
+    const installHome = join(root, "home");
+    const installState = join(root, "state");
+    apply(installHome, installState, profile.name, targets, plan(installHome, targets, null));
+
+    const claudeTargets = render(profile, ["claude"]);
+    const actions = plan(installHome, claudeTargets, readManifest(installState));
+    expect(actions).toContainEqual({ path: ".grok/agents/lead.md", op: "kept", reason: "harness absent" });
+    expect(actions).toContainEqual({ path: ".codex/rules/orch.rules", op: "kept", reason: "harness absent" });
+    expect(actions.filter((action) => action.op === "kept").map((action) => `kept ~/${action.path} (${action.reason})`)).toContain(
+      "kept ~/.grok/agents/lead.md (harness absent)",
+    );
+    apply(installHome, installState, profile.name, claudeTargets, actions);
+    expect(existsSync(join(installHome, ".grok", "agents", "lead.md"))).toBe(true);
+    expect(existsSync(join(installHome, ".codex", "rules", "orch.rules"))).toBe(true);
+    expect(readManifest(installState)?.entries.map((entry) => entry.path)).toContain(".grok/agents/lead.md");
+    const claudeDrift = drift(installHome, installState, ["claude"]);
+    expect(claudeDrift.some((line) => line.endsWith(".claude/agents/lead.md"))).toBe(true);
+    expect(claudeDrift.some((line) => line.includes(".codex/") || line.includes(".grok/"))).toBe(false);
+
+    uninstall(installHome, installState, false);
+    expect(existsSync(join(installHome, ".grok", "agents", "lead.md"))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
 });
 
 describe("lead launch argv", () => {
   test("a lane worker is refused before lead launch", () => {
     expect(leadGuard({ ORCH_LANE: "1" })).toBe("lead: a lane worker cannot start a lead session");
     expect(leadGuard({ ORCH_LANE: "0" })).toBeNull();
+  });
+
+  test("missing harness availability reports the detected list", () => {
+    expect(leadAvailability("grok", (bin) => bin === "claude")).toBe(
+      "lead: grok is not installed (detected: claude)",
+    );
+    expect(leadAvailability("claude", (bin) => bin === "claude")).toBeNull();
+
+    const root = mkdtempSync(join(tmpdir(), "lead-absent-"));
+    const bin = fakePath(root, ["claude"]);
+    const result = spawnSync(process.execPath, [join(import.meta.dir, "../src/lead.ts"), "grok"], {
+      encoding: "utf8",
+      env: { ...process.env, HOME: join(root, "home"), ORCH_LANE: "0", PATH: bin },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr.trim()).toBe("lead: grok is not installed (detected: claude)");
+    rmSync(root, { recursive: true, force: true });
   });
 
   test("Codex: lead prompt passed once as developer_instructions", () => {
@@ -185,7 +295,7 @@ describe("external workers", () => {
   });
 
   test("install ships the Codex lead rule for lane and orch", () => {
-    const rule = render(loadProfile("max20")).find((t) => t.path === ".codex/rules/orch.rules");
+    const rule = render(profile, ["claude", "codex", "grok"]).find((t) => t.path === ".codex/rules/orch.rules");
     // lane run asks: it runs the spec's SETUP and VERIFY on the host.
     expect(rule?.content).toMatch(/pattern = \["lane", "run"\],\n\s+decision = "prompt"/);
     expect(rule?.content).toContain('pattern = ["lane", ["review", "status", "gc"]]');
@@ -208,17 +318,17 @@ describe("external workers", () => {
     expect(argv).toContain("--no-auto-update");
     const pinned = workerArgv("grok", { model: "grok-4.7-build-fast", effort: "high" }, opts).argv;
     expect(pinned.slice(pinned.indexOf("--model"), pinned.indexOf("--model") + 4)).toEqual(["--model", "grok-4.7-build-fast", "--reasoning-effort", "high"]);
-    const profile = render(loadProfile("max20")).find((t) => t.path === ".grok/sandbox.toml");
-    expect(profile?.content).toMatch(/\[profiles\.orch-lane\]\nextends = "workspace"\nrestrict_network = true/);
-    expect(profile?.content).toMatch(/\[profiles\.orch-review\]\nextends = "read-only"\nrestrict_network = true/);
-    for (const p of ["~/.grok/agents", "~/.grok/bin", "~/.grok/downloads"]) expect(profile?.content).toContain(`"${p}"`);
+    const grokProfile = render(profile, ["claude", "codex", "grok"]).find((t) => t.path === ".grok/sandbox.toml");
+    expect(grokProfile?.content).toMatch(/\[profiles\.orch-lane\]\nextends = "workspace"\nrestrict_network = true/);
+    expect(grokProfile?.content).toMatch(/\[profiles\.orch-review\]\nextends = "read-only"\nrestrict_network = true/);
+    for (const p of ["~/.grok/agents", "~/.grok/bin", "~/.grok/downloads"]) expect(grokProfile?.content).toContain(`"${p}"`);
   });
 
   test("install adopts an empty pre-existing file, never a non-empty one", () => {
     const home = mkdtempSync(join(tmpdir(), "adopt-"));
     mkdirSync(join(home, ".grok"), { recursive: true });
     writeFileSync(join(home, ".grok", "sandbox.toml"), "");
-    const t = render(loadProfile("max20")).filter((x) => x.path === ".grok/sandbox.toml");
+    const t = render(profile, ["claude", "codex", "grok"]).filter((x) => x.path === ".grok/sandbox.toml");
     expect(plan(home, t, null)[0].op).toBe("update");
     writeFileSync(join(home, ".grok", "sandbox.toml"), "[profiles.mine]\n");
     expect(plan(home, t, null)[0].op).toBe("conflict");
@@ -235,13 +345,34 @@ describe("external workers", () => {
     writeFileSync(join(home, ".codex", "rules", "orch.rules"), "x");
     expect(doctorChecks(home, () => true, () => true).lines.join("\n")).toContain("orch-lane");
     mkdirSync(join(home, ".grok"), { recursive: true });
-    writeFileSync(join(home, ".grok", "sandbox.toml"), render(loadProfile("max20")).find((t) => t.path === ".grok/sandbox.toml")!.content);
+    writeFileSync(join(home, ".grok", "sandbox.toml"), render(profile, ["claude", "codex", "grok"]).find((t) => t.path === ".grok/sandbox.toml")!.content);
     expect(doctorChecks(home, () => true, () => true)).toEqual({ ok: true, lines: expect.any(Array) });
     if (process.platform === "linux") {
       const blocked = doctorChecks(home, () => true, () => false);
       expect(blocked.ok).toBe(false);
       expect(blocked.lines.join("\n")).toContain("nested user namespace");
     }
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("doctor skips absent harnesses and passes with one healthy lead harness", () => {
+    const home = mkdtempSync(join(tmpdir(), "doctor-one-harness-"));
+    const result = doctorChecks(home, (bin) => ["claude", "git", "bwrap", "socat"].includes(bin), () => true);
+    expect(result.ok).toBe(true);
+    expect(result.lines).toContain("skip codex (not installed)");
+    expect(result.lines).toContain("skip grok (not installed)");
+    expect(result.lines.some((line) => line.includes("grok worker"))).toBe(false);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("doctor fails when no lead harness is installed", () => {
+    const home = mkdtempSync(join(tmpdir(), "doctor-no-lead-"));
+    const result = doctorChecks(home, () => false, () => true);
+    expect(result.ok).toBe(false);
+    expect(result.lines).toContain("skip claude (not installed)");
+    expect(result.lines).toContain("skip codex (not installed)");
+    expect(result.lines).toContain("skip grok (not installed)");
+    expect(result.lines.join("\n")).toContain("no lead-capable harness installed");
     rmSync(home, { recursive: true, force: true });
   });
 });

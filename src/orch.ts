@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
-import { doctorChecks, missingSystemPackages, onPath } from "./install/doctor.ts";
+import { doctorChecks, missingSystemPackages } from "./install/doctor.ts";
 import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs/docs.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./install/manifest.ts";
 import { addNote, callerFromEnv, closePairs, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem/mem.ts";
@@ -18,17 +18,22 @@ import { stateDir } from "./core/paths.ts";
 import { loadProfile } from "./core/profile.ts";
 import { render } from "./install/render.ts";
 import type { HookEvent } from "./hooks/hook.ts";
+import { detect, HARNESS_IDS, onPath, type HarnessId } from "./harness/registry.ts";
 
 const home = () => process.env.ORCH_HOME ?? homedir();
 
 function files(cmd: string, rest: string[]) {
-  const { values } = parseArgs({ args: rest, options: { profile: { type: "string" }, "dry-run": { type: "boolean" }, "no-system-deps": { type: "boolean" } } });
+  const { values } = parseArgs({ args: rest, options: { profile: { type: "string" }, harness: { type: "string" }, "dry-run": { type: "boolean" }, "no-system-deps": { type: "boolean" } } });
   const dry = values["dry-run"] ?? false;
   if (cmd === "install") {
+    const harnesses = harnessSelection(values.harness);
     const profile = loadProfile(values.profile);
-    const targets = render(profile);
+    const targets = render(profile, harnesses);
     const actions = plan(home(), targets, readManifest(stateDir()));
-    for (const a of actions) console.log(`${a.op.padEnd(9)} ~/${a.path}${a.reason ? `  (${a.reason})` : ""}`);
+    console.log(`harnesses: ${harnesses.join(", ") || "none"}`);
+    for (const a of actions) console.log(a.op === "kept"
+      ? `kept ~/${a.path} (${a.reason})`
+      : `${a.op.padEnd(9)} ~/${a.path}${a.reason ? `  (${a.reason})` : ""}`);
     if (actions.some((a) => a.op === "conflict")) {
       console.error("orch: conflicts, nothing written");
       process.exit(1);
@@ -40,10 +45,20 @@ function files(cmd: string, rest: string[]) {
     }
     if (!values["no-system-deps"]) systemDeps(dry);
   } else if (cmd === "diff") {
-    for (const l of drift(home(), stateDir())) console.log(l);
+    const harnesses = harnessSelection(values.harness);
+    console.log(`harnesses: ${harnesses.join(", ") || "none"}`);
+    for (const l of drift(home(), stateDir(), harnesses)) console.log(l);
   } else {
     for (const l of uninstall(home(), stateDir(), dry)) console.log(l);
   }
+}
+
+function harnessSelection(value?: string): HarnessId[] {
+  if (value === undefined) return detect();
+  const names = value.split(",").map((name) => name.trim()).filter(Boolean);
+  const unknown = names.filter((name) => !(HARNESS_IDS as string[]).includes(name));
+  if (!names.length || unknown.length) throw new Error(`orch: invalid --harness ${value}`);
+  return [...new Set(names as HarnessId[])];
 }
 
 // The sandboxed Claude worker needs bubblewrap and socat (Linux). They are
@@ -177,6 +192,6 @@ else if (cmd === "doctor") {
   if (!ok) process.exitCode = 1;
 }
 else {
-  console.log("usage: orch install [--profile p] [--dry-run] [--no-system-deps] | diff | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
+  console.log("usage: orch install [--profile p] [--harness claude,codex] [--dry-run] [--no-system-deps] | diff [--harness claude,codex] | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
   process.exitCode = 2;
 }
