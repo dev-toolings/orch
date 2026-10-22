@@ -39,6 +39,7 @@ dépendance externe. Plan :
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
 | `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |
 | `orch mem add\|search\|recent\|review\|show` | Mémoire du lead : notes Markdown, rappel à la demande ; `review` liste les notes proches |
+| `orch mem outcome <id> useful\|dead_end [--why ...]`, `orch mem reflect` | Retour d'usage sur une note rappelée ; `reflect` liste les notes fiables, les impasses et les corrections |
 | `orch docs update\|status\|search` | Corpus local de docs officielles, indexé par `ctx`, consulté à la demande |
 | `make check` | Typecheck, tests, matrice d'équivalence niveaux 0 à 2 |
 | `make smoke` | Lanes réelles vers codex, grok et claude : tâche complète + sondes de confinement (écriture `$HOME`, réseau, lane imbriquée) + décisions de la règle du lead Codex. Payant (~450k tokens, surtout en cache) : à lancer après tout changement de la façon dont les workers démarrent |
@@ -112,3 +113,16 @@ harness) : aucun doublon évité, 11 à 74 % de tokens en plus par session
 d'écriture ; il a été retiré. `bun scripts/mem-dedup-replay.ts` rejoue la
 détection en lecture seule sur les vraies notes ; le corpus étiqueté de
 `tests/fixtures/mem-dedup/` en fixe le rappel dans `make check`.
+
+`orch mem outcome <id> useful|dead_end [--why "..."]` note comment une note
+rappelée a tenu à l'usage. Les signaux vont dans un seul fichier en ajout seul,
+`~/.local/state/orch/mem/outcomes.jsonl`, jamais dans les notes : une note
+projet versionnée ne bouge pas quand on l'utilise. Chaque signal compte +1 ou
+-1 et son poids est divisé par deux tous les 30 jours (`--half-life-days`).
+Une note devient fiable (`trusted`) une fois utile dans 2 sessions
+distinctes ; utile et impasse à la fois, elle est contestée. `search` et
+`recent` ajoutent ce statut en fin de ligne ; `orch mem reflect` liste les
+notes fiables, à confirmer, contestées, les impasses avec leur raison, et les
+dernières corrections (`supersede`). Sans modèle, à la demande. Formule reprise
+de `graphify reflect` (Graphify-Labs/graphify, Apache-2.0), réécrite en
+TypeScript.

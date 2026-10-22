@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addNote, forgetNote, type Caller, listNotes, recentNotes, searchNotes, showNote, supersedeNote } from "../src/mem/mem.ts";
+import { readSignals, recordOutcome, standings } from "../src/mem/outcome.ts";
 import { similar } from "../src/mem/similar.ts";
 
 let state: string;
@@ -254,6 +255,81 @@ describe("mem close notes", () => {
       expect(review).toMatch(/newer \S+-le-port-local-de-l-api-atlas-passe/);
       expect(review).toMatch(/older \S+-le-port-local-de-l-api-atlas-est-4817/);
       expect(review).not.toContain("migrations");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an outcome is recorded for a readable active note, never by a worker or on an inactive note", () => {
+    const local = mkdtempSync(join(tmpdir(), "orch-mem-outcome-"));
+    const own = join(local, "repo");
+    mkdirSync(own);
+    spawnSync("git", ["-C", own, "init", "-q"]);
+    try {
+      const n = addNote({ body: "Outcome target note", scope: "project" }, lead("claude"), { state: local, cwd: own });
+      const mine = addNote({ body: "Lead only doctrine", scope: "lead" }, lead("claude"), { state: local, cwd: own });
+      recordOutcome(n.id, "useful", "  answered\n the port question ", lead("codex"), { state: local, cwd: own });
+      expect(readSignals(local)).toMatchObject([{ note: n.id, outcome: "useful", why: "answered the port question", harness: "codex" }]);
+      expect(() => recordOutcome(n.id, "useful", undefined, worker, { state: local, cwd: own })).toThrow(/workers never write/);
+      expect(() => recordOutcome(n.id, "great", undefined, lead("codex"), { state: local, cwd: own })).toThrow(/not useful or dead_end/);
+      expect(() => recordOutcome(mine.id, "useful", undefined, plain, { state: local, cwd: own })).toThrow(/no readable note/);
+      supersedeNote(n.id, { body: "Outcome target note, corrected" }, lead("claude"), { state: local, cwd: own });
+      expect(() => recordOutcome(n.id, "dead_end", undefined, lead("claude"), { state: local, cwd: own })).toThrow(/not active/);
+      expect(readSignals(local)).toHaveLength(1);
+    } finally {
+      rmSync(local, { recursive: true, force: true });
+    }
+  });
+
+  test("standings need two sessions to trust a note and let recent signals outweigh old ones", () => {
+    const local = mkdtempSync(join(tmpdir(), "orch-mem-standing-"));
+    const now = new Date("2026-10-22T12:00:00Z");
+    const daysAgo = (d: number) => new Date(now.getTime() - d * 86_400_000);
+    const session = (s: string): Caller => ({ lead: true, lane: false, harness: "claude", session: s });
+    try {
+      const at = (body: string) => addNote({ body, scope: "operator" }, lead("claude"), { state: local, cwd: repo }).id;
+      const [trusted, once, contested, dead] = [at("Trusted fact"), at("Useful once"), at("Old use then a dead end"), at("Plain dead end")];
+      recordOutcome(trusted, "useful", undefined, session("a"), { state: local, cwd: repo, now: daysAgo(1) });
+      recordOutcome(trusted, "useful", undefined, session("b"), { state: local, cwd: repo, now: daysAgo(2) });
+      recordOutcome(once, "useful", undefined, session("a"), { state: local, cwd: repo, now: daysAgo(1) });
+      recordOutcome(once, "useful", undefined, session("a"), { state: local, cwd: repo, now: daysAgo(0) });
+      recordOutcome(contested, "useful", undefined, session("a"), { state: local, cwd: repo, now: daysAgo(60) });
+      recordOutcome(contested, "dead_end", "stale port", session("b"), { state: local, cwd: repo, now: daysAgo(0) });
+      recordOutcome(dead, "dead_end", undefined, session("c"), { state: local, cwd: repo, now: daysAgo(0) });
+      const got = standings(lead("claude"), { state: local, cwd: repo, now });
+      expect(got.map((s) => [s.note.id, s.kind])).toEqual([[trusted, "trusted"], [once, "tentative"], [contested, "contested"], [dead, "dead_end"]]);
+      const c = got.find((s) => s.note.id === contested)!;
+      expect(c.score).toBeCloseTo(0.25 - 1, 5);
+      expect(c.why).toBe("stale port");
+    } finally {
+      rmSync(local, { recursive: true, force: true });
+    }
+  });
+
+  test("orch mem outcome marks search lines and orch mem reflect lists standings and corrections", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-mem-reflect-"));
+    const localRepo = join(root, "repo");
+    mkdirSync(localRepo);
+    spawnSync("git", ["-C", localRepo, "init", "-q"]);
+    const cli = (...args: string[]) => spawnSync(process.execPath, [join(import.meta.dir, "..", "src", "orch.ts"), "mem", ...args], {
+      cwd: localRepo, encoding: "utf8", env: { PATH: process.env.PATH, HOME: join(root, "home"), ORCH_STATE: join(root, "state"), ORCH_SESSION: "s1" },
+    });
+    const idOf = (out: string) => /saved (\S+)/.exec(out)![1];
+    try {
+      expect(cli("reflect").stdout).toContain("no outcome yet");
+      const port = idOf(cli("add", "Le port local de l'API Atlas est 4817.").stdout);
+      const cron = idOf(cli("add", "Les migrations de base se lancent le jeudi.").stdout);
+      expect(cli("outcome", port, "useful").stdout).toContain(`noted useful for ${port}`);
+      expect(cli("outcome", cron, "dead_end", "--why", "plus de cron le jeudi").status).toBe(0);
+      expect(cli("outcome", port, "bof").status).not.toBe(0);
+      expect(cli("search", "port", "Atlas").stdout).toContain("[useful x1]");
+      const fixed = idOf(cli("supersede", cron, "Les migrations de base se lancent à chaque déploiement.").stdout);
+      const out = cli("reflect").stdout;
+      expect(out).toMatch(/tentative[^\n]*\n\s+\+1\.00\s+\S+-le-port-local/);
+      expect(out).not.toContain("dead ends");
+      expect(out).toContain(`corrections (latest supersedes)`);
+      expect(out).toContain(`${fixed}`);
+      expect(out).toContain(`replaces ${cron}`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

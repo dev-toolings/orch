@@ -42,6 +42,10 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   was benched on 2026-10-21: no gain, more tokens. `tests/fixtures/mem-dedup`
   pins its recall; `scripts/mem-dedup-replay.ts` replays it read-only on
   real stores before any threshold change.
+- `src/mem/outcome.ts` backs `orch mem outcome` and `orch mem reflect`: use
+  signals (useful, dead_end) in one append-only `mem/outcomes.jsonl` under the
+  state dir, never in the notes; signed, halving every 30 days, trusted only
+  from 2 sessions (idea from graphify reflect, Apache-2.0). No model call.
 - `scripts/orca-run-teardown.sh` closes an Orca Run (worktrees, setup
   terminals, merged branches); the `operator-delegation` skill points here.
 - `src/docs/docs.ts` keeps a local docs corpus declared in `catalog/docs.yaml`
