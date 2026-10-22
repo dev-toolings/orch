@@ -4,8 +4,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { grokProfileInstalled } from "../harness/grok-runtime.ts";
 import { join } from "node:path";
+import { detect, HARNESS_IDS, onPath, REGISTRY, type Which } from "../harness/registry.ts";
 
-export type Which = (bin: string) => boolean;
 export type Probe = () => boolean;
 
 // Claude Code's sandbox runs its seccomp helper inside bwrap, and that helper
@@ -16,8 +16,6 @@ export type Probe = () => boolean;
 export const nestedUserns: Probe = () =>
   spawnSync("bwrap", ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-user",
     "unshare", "--user", "--map-root-user", "true"], { stdio: "ignore" }).status === 0;
-
-export const onPath: Which = (bin) => spawnSync("sh", ["-c", `command -v ${bin}`], { stdio: "ignore" }).status === 0;
 
 // System packages the sandboxed Claude worker needs on Linux, by binary.
 const CLAUDE_SANDBOX_PACKAGES: Record<string, string> = { bwrap: "bubblewrap", socat: "socat" };
@@ -30,28 +28,40 @@ export function missingSystemPackages(which: Which = onPath): string[] {
 
 export function doctorChecks(home: string, which: Which = onPath, nested: Probe = nestedUserns): { ok: boolean; lines: string[] } {
   const lines: string[] = [];
-  let ok = true;
+  const detected = detect(which);
+  const leadHarnesses = detected.filter((harness) => REGISTRY[harness].lead);
+  let ok = leadHarnesses.length > 0;
   const check = (label: string, missing: string[], fix: string) => {
     if (missing.length) ok = false;
     lines.push(missing.length ? `FAIL ${label}: missing ${missing.join(", ")} (${fix})` : `ok   ${label}`);
   };
-  const absent = (bins: string[]) => bins.filter((b) => !which(b));
-
-  check("codex worker", absent(["codex", "git"]), "install the Codex CLI");
-  check("grok worker", absent(["grok", "git"]), "install the Grok CLI");
-  // Grok write workers run under orch's `orch-lane` profile (no child network).
-  check("grok worker sandbox profile orch-lane", grokProfileInstalled(home) ? [] : ["~/.grok/sandbox.toml [profiles.orch-lane], as orch installs it"], "orch install");
-  // The Claude write worker runs Bash in Claude Code's OS sandbox, which needs
-  // bubblewrap and socat on Linux; without them it refuses to start.
-  const claudeMissing = absent(["claude", "git"]);
-  if (process.platform === "linux") claudeMissing.push(...absent(["bwrap", "socat"]));
-  check("claude worker (sandboxed Bash)", claudeMissing, "sudo apt install bubblewrap socat");
-  if (process.platform === "linux" && !claudeMissing.length) {
-    check("claude worker sandbox can nest a user namespace", nested() ? [] : ["nested user namespace in bwrap"],
-      "AppArmor blocks it: scripts/claude-sandbox-apparmor.sh --install");
+  if (!leadHarnesses.length) check("lead harness", ["no lead-capable harness installed"], "install Claude Code, Codex CLI, or Grok CLI");
+  const absent = (bins: string[]) => bins.filter((bin) => !which(bin));
+  for (const harness of HARNESS_IDS) {
+    if (!detected.includes(harness)) {
+      lines.push(`skip ${harness} (not installed)`);
+      continue;
+    }
+    if (!REGISTRY[harness].lead) {
+      lines.push(`skip ${harness} (not lead-capable)`);
+      continue;
+    }
+    if (harness === "claude") {
+      const missing = absent(["git"]);
+      if (process.platform === "linux") missing.push(...absent(["bwrap", "socat"]));
+      check("claude worker (sandboxed Bash)", missing, "sudo apt install bubblewrap socat");
+      if (process.platform === "linux" && !missing.length) {
+        check("claude worker sandbox can nest a user namespace", nested() ? [] : ["nested user namespace in bwrap"],
+          "AppArmor blocks it: scripts/claude-sandbox-apparmor.sh --install");
+      }
+    } else if (harness === "codex") {
+      check("codex worker", absent(["git"]), "install the Codex CLI");
+      const rules = join(home, ".codex", "rules", "orch.rules");
+      check("codex lead rule (lane, orch outside the sandbox)", existsSync(rules) ? [] : ["~/.codex/rules/orch.rules"], "orch install");
+    } else {
+      check("grok worker", absent(["git"]), "install the Grok CLI");
+      check("grok worker sandbox profile orch-lane", grokProfileInstalled(home) ? [] : ["~/.grok/sandbox.toml [profiles.orch-lane], as orch installs it"], "orch install");
+    }
   }
-  // A Codex lead runs lane and orch only through this exec-policy rule.
-  const rules = join(home, ".codex", "rules", "orch.rules");
-  check("codex lead rule (lane, orch outside the sandbox)", existsSync(rules) ? [] : ["~/.codex/rules/orch.rules"], "orch install");
   return { ok, lines };
 }

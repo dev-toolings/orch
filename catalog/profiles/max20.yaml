@@ -13,9 +13,9 @@ explore:
 review:
   # cross-family reviewer chosen from the lead's harness; `high` is used by
   # `lane review --risk high` (data migration, security path, public API)
-  claude: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium } }
-  codex: { to: claude, model: opus, effort: high }
-  grok: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium } }
+  claude: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium }, fallback: [grok] }
+  codex: { to: claude, model: opus, effort: high, fallback: [claude, grok] }
+  grok: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium }, fallback: [codex, claude] }
 limits:
   max_concurrent_ceiling: 8
   verify_concurrent: 2

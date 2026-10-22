@@ -1,4 +1,5 @@
 import type { Harness } from "../core/profile.ts";
+import type { HarnessId } from "../harness/registry.ts";
 import type { Status, Usage } from "../harness/harness.ts";
 
 export interface LaneReportFields {
@@ -25,7 +26,7 @@ export interface LaneReportFields {
 
 export interface ReviewReportFields {
   kind?: "REVIEW" | "ASK";
-  to: Harness;
+  to: HarnessId;
   model?: string | null;
   effort?: string;
   risk: "normal" | "high";
@@ -34,6 +35,7 @@ export interface ReviewReportFields {
   usage: Usage;
   logPath: string;
   message: string;
+  note?: string;
 }
 
 export function fmtUsage(u: Usage): string {
@@ -71,6 +73,6 @@ export function laneReport(f: LaneReportFields): string {
 }
 
 export function reviewReport(f: ReviewReportFields): string {
-  const head = `${f.kind ?? "REVIEW"} REPORT\nREVIEWER: ${f.to} · ${f.model ?? "inherited"} · effort ${f.effort ?? "default"} · risk ${f.risk}\nEXIT: ${f.exitCode}${f.timedOut ? " (timeout)" : ""}\nUSAGE: ${fmtUsage(f.usage)}\nLOG: ${f.logPath}\n`;
+  const head = `${f.kind ?? "REVIEW"} REPORT\nREVIEWER: ${f.to} · ${f.model ?? "inherited"} · effort ${f.effort ?? "default"} · risk ${f.risk}${f.note ? ` (${f.note})` : ""}\nEXIT: ${f.exitCode}${f.timedOut ? " (timeout)" : ""}\nUSAGE: ${fmtUsage(f.usage)}\nLOG: ${f.logPath}\n`;
   return `${head}${f.message.trim()}\n`;
 }

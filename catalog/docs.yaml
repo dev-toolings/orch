@@ -44,3 +44,5 @@ sources:
   - { id: codex, stack: codex, kind: git, url: https://github.com/openai/codex, ref: main, paths: [docs] }
   - { id: openai-dev, stack: openai, kind: llms, url: https://developers.openai.com/llms.txt }
   - { id: grok, stack: grok, kind: llms, url: https://docs.x.ai/llms.txt }
+  - { id: opencode-llms, stack: opencode, kind: llms, url: https://opencode.ai/v2/llms.txt }
+  - { id: opencode, stack: opencode, kind: git, url: https://github.com/anomalyco/opencode, ref: dev, paths: [packages/web/src/content/docs] }
