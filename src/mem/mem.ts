@@ -278,4 +278,4 @@ export function formatNote(n: Note): string {
 }
 
 export const MEM_USAGE =
-  "usage: orch mem add [--scope operator|project|lead] [--tags a,b (3 to 6 words to ask it by, not in the text)] <text|-> | search <words> [--scope s] [--limit n] [--all] | recent [--scope s] [--limit n] [--all] | review [--scope s] [--limit n] | show <id> | supersede <id> [--tags a,b] <text|-> | forget <id> [--reason text] | outcome <id> useful|dead_end [--why text] | reflect [--scope s] [--limit n] [--half-life-days n]";
+  "usage: orch mem add [--scope operator|project|lead] [--tags a,b (3 to 6 words to ask it by, not in the text)] <text|-> | search <words> [--scope s] [--limit n] [--all] | recent [--scope s] [--limit n] [--all] | review [--scope s] [--limit n] | show <id> | supersede <id> [--tags a,b] <text|-> | forget <id> [--reason text] | outcome <id> useful|dead_end [--why text] | reflect [--scope s] [--limit n] [--half-life-days n] | graph [--scope s] [--all] [--out file.html]";
