@@ -2,8 +2,8 @@
 // lane: hand one bounded task to another harness in its own git worktree,
 // optionally observed in Orca. No model call happens in this process.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { git } from "./core/git.ts";
 import { pinnedGrok, grokProfileInstalled } from "./harness/grok-runtime.ts";
@@ -582,6 +582,54 @@ export function listLanes(): LaneState[] {
   });
 }
 
+export interface LaneOrphan { id: string; dir: string; worktree: boolean; repo?: string; dirty: number | null }
+
+// Grace for a run between mkdir of its lane directory and its first record.
+const ORPHAN_GRACE_MS = 5 * 60_000;
+
+// A lane directory with no state.json: a run killed before it saved its
+// record (versions before d37f519 saved it only at the end). listLanes cannot
+// see it, so status and gc list it here. The id carries the creating pid: a
+// recent directory whose creator is alive is a run still starting.
+export function listOrphans(): LaneOrphan[] {
+  const root = join(stateDir(), "lanes");
+  if (!existsSync(root)) return [];
+  return readdirSync(root).flatMap((id): LaneOrphan[] => {
+    const dir = join(root, id);
+    if (!statSync(dir).isDirectory() || existsSync(join(dir, "state.json"))) return [];
+    if (alive(Number(id.split("-")[2]) || undefined) && Date.now() - statSync(dir).mtimeMs < ORPHAN_GRACE_MS) return [];
+    const wt = join(dir, "wt");
+    if (!existsSync(wt)) return [{ id, dir, worktree: false, dirty: 0 }];
+    const common = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    const st = statusEntries(wt);
+    return [{ id, dir, worktree: true, repo: common.ok ? dirname(common.out) : undefined, dirty: st === null ? null : st.length }];
+  });
+}
+
+// An orphan without a worktree holds only logs and goes. One with a worktree
+// may hold the only copy of a worker's result: it stays until --drop names it.
+function gcOrphan(o: LaneOrphan, drop: string | undefined, out: string[]): void {
+  if (o.worktree && o.id !== drop) {
+    const dirty = o.dirty === null ? "status unknown" : `${o.dirty} uncommitted`;
+    out.push(`kept orphan ${o.id} (no lane record, repo ${o.repo ?? "unknown"}, ${dirty}; lane gc --drop ${o.id} removes it)`);
+    return;
+  }
+  if (o.worktree && o.repo) {
+    const wt = join(o.dir, "wt");
+    if (!git(o.repo, "worktree", "remove", "--force", wt).ok) {
+      out.push(`kept orphan ${o.id} (git worktree remove failed)`);
+      return;
+    }
+    const branch = `lane/${o.id}`;
+    if (git(o.repo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`).ok && !git(o.repo, "branch", "-D", branch).ok) {
+      out.push(`kept orphan ${o.id} (branch removal failed)`);
+      return;
+    }
+  }
+  rmSync(o.dir, { recursive: true, force: true });
+  out.push(`removed orphan ${o.id}${o.worktree ? "" : " (logs only)"}`);
+}
+
 function forgetCallerRepoLane(s: LaneState, out: string[]): void {
   rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
   out.push(`forgot ${s.id} (worktree is the caller repo: lane record removed, repo, branch and Orca entry untouched)`);
@@ -653,6 +701,7 @@ export function laneGc(drop?: string): string[] {
     rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
     out.push(`removed ${s.id}${applied ? " (applied)" : ""}`);
   }
+  for (const o of listOrphans()) gcOrphan(o, drop, out);
   return out;
 }
 
@@ -693,6 +742,9 @@ async function main() {
       : await laneAsk({ from, to, question: readFileSync(resolve(values.file!), "utf8"), repo, profile, risk }));
   } else if (cmd === "status") {
     for (const s of listLanes()) console.log(`${s.id}  ${s.status}  ${s.branch}  ${fmtUsage(s.usage)}`);
+    for (const o of listOrphans()) {
+      console.log(`${o.id}  orphan  ${o.repo ?? (o.worktree ? "repo unknown" : "no worktree")}  ${o.dirty === null ? "status unknown" : `${o.dirty} uncommitted`}`);
+    }
   } else if (cmd === "gc") {
     for (const line of laneGc(values.drop)) console.log(line);
   } else {
