@@ -18,7 +18,7 @@ function frontmatter(fields: Record<string, string | undefined>): string {
 }
 
 const LEAD_DESCRIPTION =
-  "Lead developer session agent, selected at launch with --agent lead. Never spawn it as a subagent.";
+  "Lead developer session agent, selected at launch with --agent marius. Never spawn it as a subagent.";
 
 export function hookCommand(event: string, harness: "claude" | "codex" | "grok"): string {
   return `[ "$ORCH_LEAD" = 1 ] || exit 0; exec "$HOME/.local/bin/orch" hook ${event} --harness ${harness}`;
@@ -45,18 +45,18 @@ export function render(profile: Profile, harnesses: HarnessId[]): Target[] {
   const claude = profile.lead.claude;
   const targets: Target[] = [
     {
-      path: ".claude/agents/lead.md",
+      path: ".claude/agents/marius.md",
       harness: "claude",
       kind: "file",
-      content: frontmatter({ name: "lead", description: LEAD_DESCRIPTION, model: claude.model ?? undefined, effort: claude.effort }) + body("lead.md") + "\n",
+      content: frontmatter({ name: "marius", description: LEAD_DESCRIPTION, model: claude.model ?? undefined, effort: claude.effort }) + body("lead.md") + "\n",
     },
     {
       // no model line (Grok drops agents whose model it does not know); lead.ts and
       // harness.ts pin the model on the command line instead
-      path: ".grok/agents/lead.md",
+      path: ".grok/agents/marius.md",
       harness: "grok",
       kind: "file",
-      content: frontmatter({ name: "lead", description: LEAD_DESCRIPTION }) + body("lead.md") + "\n",
+      content: frontmatter({ name: "marius", description: LEAD_DESCRIPTION }) + body("lead.md") + "\n",
     },
     {
       // Claude's built-in Explore inherits the lead's model (Opus): this one is pinned
@@ -107,6 +107,7 @@ export function render(profile: Profile, harnesses: HarnessId[]): Target[] {
     },
     { path: ".local/bin/lane", kind: "symlink", content: join(ROOT, "src", "lane.ts") },
     { path: ".local/bin/lead", kind: "symlink", content: join(ROOT, "src", "lead.ts") },
+    { path: ".local/bin/marius", kind: "symlink", content: join(ROOT, "src", "lead.ts") },
     { path: ".local/bin/orch", kind: "symlink", content: join(ROOT, "src", "orch.ts") },
   ];
   return targets.filter((target) => !target.harness || harnesses.includes(target.harness));

@@ -7,7 +7,7 @@ dépendance externe. Plan :
 
 ```text
 .------------------------------------.
-| lead claude|codex|grok             |
+| marius claude|codex|grok           |
 | (harness natif + profil lead)      |
 '-----------------+------------------'
                   |  petites modifs : le lead les fait
@@ -30,7 +30,7 @@ dépendance externe. Plan :
 
 | Commande | Effet |
 |---|---|
-| `lead claude\|codex\|grok` | Ouvre une session lead (harness lancé directement) |
+| `marius claude\|codex\|grok` | Ouvre une session avec Marius, le lead (harness lancé directement) ; `lead` reste un alias |
 | `lane run --to codex --spec f` | Délègue une tâche ; worktree enfant et état visible dans Orca local si disponible ; rapport borné |
 | `lane run --to codex --spec f --channel headless` | Force le canal sans Orca |
 | `lane run --to codex --spec f --channel orca` | Demande le canal Orca ; repli headless si Orca ou son relais est indisponible |
@@ -57,8 +57,9 @@ suppression asynchrone est encore en cours : relancer `lane gc` après sa fin.
 
 ## Fichiers installés (`orch install`)
 
-`~/.claude/agents/lead.md`, `~/.grok/agents/lead.md`,
+`~/.claude/agents/marius.md`, `~/.grok/agents/marius.md`,
 `~/.grok/agents/lead-explore.md`, `~/.local/bin/lane`, `~/.local/bin/lead`,
+`~/.local/bin/marius`,
 `~/.local/bin/orch`, `~/.codex/rules/orch.rules`.
 Codex ne reçoit pas de fichier d'agent : `lead codex` passe le prompt lead en
 `developer_instructions` au lancement. La règle `orch.rules` laisse un lead

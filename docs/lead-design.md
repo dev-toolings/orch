@@ -2,7 +2,7 @@
 
 > **Révision du 2026-10-19 : KonohaOS retiré.** KonohaOS est fermé pour une
 > refonte ; ce dépôt n'en dépend plus. `lead` lance le harness directement
-> (`--agent lead` pour Claude et Grok, `developer_instructions` pour Codex).
+> (`--agent marius` pour Claude et Grok, `developer_instructions` pour Codex).
 > Le lead n'a plus de mémoire persistante : les décisions durables vont dans
 > le dépôt. Les sections « Second cerveau », la colonne mémoire de
 > l'architecture, les raccourcis `cla`/`cod` et les étapes 4-5 du plan
@@ -96,8 +96,8 @@ sessions apprennent. Décision proposée, sans toucher konohaos :
 | Pièce | Livraison | Vérifié |
 |---|---|---|
 | Prompt lead | `catalog/lead.yaml`, rendu par harness | - |
-| Claude | `~/.claude/agents/lead.md`, `cla --agent lead` | `--agent` : doc officielle |
-| Grok | `~/.grok/agents/lead.md`, `grok --agent lead` | `--agent` : `grok --help` |
+| Claude | `~/.claude/agents/marius.md`, `claude --agent marius` | `--agent` : doc officielle |
+| Grok | `~/.grok/agents/marius.md`, `grok --agent marius` | `--agent` : `grok --help` |
 | Codex | instructions passées par `-c` au lancement, `config.toml` intact | clé exacte à vérifier (étape 3) |
 | Raccourcis | `cla`, `cod`, `grok` transmettent `"$@"` : la mémoire reste injectée | à tester |
 | Rôles natifs | catalogue + manifeste de `design.md` | formats vérifiés |
