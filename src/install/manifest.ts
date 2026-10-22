@@ -43,7 +43,7 @@ function current(abs: string): { kind: "file" | "symlink"; sha256: string } | nu
   return { kind: "file", sha256: "not-a-file" };
 }
 
-export type Action = { path: string; op: "create" | "update" | "unchanged" | "conflict" | "kept"; reason?: string };
+export type Action = { path: string; op: "create" | "update" | "unchanged" | "conflict" | "remove" | "kept"; reason?: string };
 
 function entryHarness(entry: Entry): HarnessId | undefined {
   if (entry.harness) return entry.harness;
@@ -70,9 +70,16 @@ export function plan(home: string, targets: Target[], manifest: Manifest | null)
   const targetPaths = new Set(targets.map((target) => target.path));
   const selected = new Set(targets.flatMap((target) => target.harness ? [target.harness] : []));
   for (const entry of manifest?.entries ?? []) {
+    if (targetPaths.has(entry.path)) continue;
+    const cur = current(join(home, entry.path));
+    if (!cur) continue;
     const harness = entryHarness(entry);
-    if (!targetPaths.has(entry.path) && harness && !selected.has(harness) && current(join(home, entry.path))) {
+    if (harness && !selected.has(harness)) {
       actions.push({ path: entry.path, op: "kept", reason: "harness absent" });
+    } else if (cur.sha256 === entry.sha256) {
+      actions.push({ path: entry.path, op: "remove" });
+    } else {
+      actions.push({ path: entry.path, op: "kept", reason: "edited since install" });
     }
   }
   return actions;
