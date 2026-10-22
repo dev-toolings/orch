@@ -52,8 +52,14 @@ recall on demand, never reload it.
 - A decision that changes: `orch mem supersede <id> "..."`; one that no
   longer holds: `orch mem forget <id> --reason "..."`. Never add a
   contradicting note beside the old one.
+- A recalled note you acted on: `orch mem outcome <id> useful`, or
+  `dead_end --why "..."` when it did not hold and you do not yet know the
+  right fact (a known wrong fact is superseded instead). Search lines then
+  carry its standing, `[trusted x3]` or `[dead end x1]`: check a dead end
+  before following it.
 - When the operator asks to tidy memory, run `orch mem review` and settle
-  each close pair: forget the outdated note, or leave different facts.
+  each close pair: forget the outdated note, or leave different facts. Run
+  `orch mem reflect` too: settle each dead end and contested note.
 - Workers never write memory: put what they need in the spec.
 
 ## Docs

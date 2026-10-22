@@ -13,6 +13,7 @@ import { doctorChecks, missingSystemPackages } from "./install/doctor.ts";
 import { DOCS_USAGE, loadSources, searchDocs, statusLines, updateSource } from "./docs/docs.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./install/manifest.ts";
 import { addNote, callerFromEnv, closePairs, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem/mem.ts";
+import { badges, recordOutcome, reflect } from "./mem/outcome.ts";
 import { bound } from "./core/output.ts";
 import { stateDir } from "./core/paths.ts";
 import { loadProfile } from "./core/profile.ts";
@@ -84,7 +85,10 @@ function mem(args: string[]) {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { scope: { type: "string" }, tags: { type: "string" }, limit: { type: "string" }, all: { type: "boolean" }, reason: { type: "string" } },
+    options: {
+      scope: { type: "string" }, tags: { type: "string" }, limit: { type: "string" }, all: { type: "boolean" }, reason: { type: "string" },
+      why: { type: "string" }, "half-life-days": { type: "string" },
+    },
   });
   const caller = callerFromEnv();
   const max = loadProfile().limits.report_max_bytes;
@@ -100,7 +104,8 @@ function mem(args: string[]) {
     console.log(`saved ${n.id} (${n.scope})`);
   } else if (sub === "search" || sub === "recent") {
     const notes = sub === "search" ? searchNotes(text, caller, { scope, limit, all: values.all }) : recentNotes(caller, { scope, limit, all: values.all });
-    console.log(bound(notes.length ? notes.map(formatLine).join("\n") : "no note", max));
+    const marks = badges(caller);
+    console.log(bound(notes.length ? notes.map((n) => formatLine(n, marks.get(n.id))).join("\n") : "no note", max));
   } else if (sub === "review") {
     const pairs = closePairs(caller, { scope, limit });
     console.log(bound(pairs.length
@@ -125,6 +130,15 @@ same fact or changed value: orch mem forget <outdated id> --reason "..."; differ
     if (!id) throw new Error("mem forget: missing note id");
     const n = forgetNote(id, values.reason ?? "", caller);
     console.log(`forgot ${n.id}`);
+  } else if (sub === "outcome") {
+    const [id, outcome] = positionals;
+    if (!id) throw new Error("mem outcome: missing note id");
+    const s = recordOutcome(id, outcome ?? "", values.why, caller);
+    console.log(`noted ${s.outcome} for ${s.note}`);
+  } else if (sub === "reflect") {
+    const halfLifeDays = values["half-life-days"] ? Number(values["half-life-days"]) : undefined;
+    if (halfLifeDays !== undefined && !(halfLifeDays > 0)) throw new Error("mem reflect: --half-life-days must be a positive number");
+    console.log(bound(reflect(caller, { scope, limit, halfLifeDays }), max));
   } else {
     console.log(MEM_USAGE);
     process.exitCode = 2;
@@ -192,6 +206,6 @@ else if (cmd === "doctor") {
   if (!ok) process.exitCode = 1;
 }
 else {
-  console.log("usage: orch install [--profile p] [--harness claude,codex] [--dry-run] [--no-system-deps] | diff [--harness claude,codex] | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
+  console.log("usage: orch install [--profile p] [--harness claude,codex] [--dry-run] [--no-system-deps] | diff [--harness claude,codex] | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget|outcome|reflect | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
   process.exitCode = 2;
 }
