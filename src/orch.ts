@@ -195,6 +195,7 @@ async function hook(args: string[]) {
   }
 }
 
+try {
 const [cmd, ...rest] = process.argv.slice(2);
 if (cmd === "hook") await hook(rest);
 else if (cmd === "mem") mem(rest);
@@ -208,4 +209,9 @@ else if (cmd === "doctor") {
 else {
   console.log("usage: orch install [--profile p] [--harness claude,codex] [--dry-run] [--no-system-deps] | diff [--harness claude,codex] | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget|outcome|reflect | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
   process.exitCode = 2;
+}
+} catch (e) {
+  const message = e instanceof Error ? e.message : String(e);
+  console.error(`orch: ${message.replace(/[\r\n]+/g, " ")}`);
+  process.exitCode = 1;
 }
