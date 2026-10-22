@@ -52,6 +52,17 @@ afterAll(() => {
   rmSync(join(home, ".."), { recursive: true, force: true });
 });
 
+test("orch reports a subcommand error as one stderr line without a stack trace", () => {
+  const result = spawnSync(process.execPath, [join(import.meta.dir, "../src/orch.ts"), "mem", "forget", "nope"], {
+    cwd: home,
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, ORCH_HOME: home, ORCH_STATE: state, ORCH_LANE: "0", ORCH_LEAD: "0" },
+  });
+  expect(result.status).toBe(1);
+  expect(result.stderr).toBe("orch: mem: no readable note nope\n");
+  expect(result.stderr).not.toMatch(/^\s+at /m);
+});
+
 describe("render", () => {
   test("orch and doctor do not import lane", () => {
     const root = join(import.meta.dir, "..");
