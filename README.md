@@ -44,6 +44,7 @@ dépendance externe. Plan :
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
 | `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |
 | `orch mem add\|search\|recent\|review\|show` | Mémoire du lead : notes Markdown, rappel à la demande ; `review` liste les notes proches |
+| `orch mem graph [--scope s] [--all] [--out f.html]` | Écrit le graphe des notes en un seul fichier HTML et affiche son URL `file://` |
 | `orch mem outcome <id> useful\|dead_end [--why ...]`, `orch mem reflect` | Retour d'usage sur une note rappelée ; `reflect` liste les notes fiables, les impasses et les corrections |
 | `orch docs update\|status\|search` | Corpus local de docs officielles, indexé par `ctx`, consulté à la demande |
 | `make check` | Typecheck, tests, matrice d'équivalence niveaux 0 à 2 |
@@ -131,3 +132,15 @@ notes fiables, à confirmer, contestées, les impasses avec leur raison, et les
 dernières corrections (`supersede`). Sans modèle, à la demande. Formule reprise
 de `graphify reflect` (Graphify-Labs/graphify, Apache-2.0), réécrite en
 TypeScript.
+
+`orch mem graph` dessine les notes lisibles et leurs liens dans
+`~/.local/state/orch/mem/graph.html` (mode 600, écrasé à chaque appel, ou
+`--out`) et affiche son URL `file://`. Un seul fichier, script inline, sans CDN
+ni serveur. Les liens viennent des notes, sans modèle : une flèche par
+`supersede` (avec `--all`), un trait par tag partagé (sauf un tag porté par
+plus de 10 notes, qui ne relie rien), un pointillé par paire proche de
+`similar.ts`. La page est un graphe vivant en canvas, façon Obsidian :
+simulation de forces, glisser une note, survol qui allume ses voisines,
+libellés qui apparaissent au zoom, tags et portées affichables comme nœuds
+(cases à cocher). Couleur par portée, anneau par statut `outcome`, filtre et
+clic pour lire la note. Idée reprise du `graph.html` de graphify.

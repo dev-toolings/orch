@@ -55,6 +55,11 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   signals (useful, dead_end) in one append-only `mem/outcomes.jsonl` under the
   state dir, never in the notes; signed, halving every 30 days, trusted only
   from 2 sessions (idea from graphify reflect, Apache-2.0). No model call.
+- `src/mem/graph.ts` backs `orch mem graph`: nodes and links computed in
+  TypeScript (supersede, shared tags under a hub cap, similar.ts pairs; no
+  model), rendered as one self-contained HTML file (canvas force graph, tag
+  and scope nodes derived in the page) with its `file://` URL.
+  Tests cover the computation and the script escaping, never the page.
 - `scripts/orca-run-teardown.sh` closes an Orca Run (worktrees, setup
   terminals, merged branches); the `operator-delegation` skill points here.
 - `src/docs/docs.ts` keeps a local docs corpus declared in `catalog/docs.yaml`

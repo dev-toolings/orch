@@ -6,13 +6,14 @@
 // orch doctor: whether each worker harness can run a lane here (see doctor.ts).
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { doctorChecks, missingSystemPackages } from "./install/doctor.ts";
 import { DOCS_USAGE, loadSources, pruneSources, searchDocs, statusLines, updateSource } from "./docs/docs.ts";
 import { apply, drift, plan, readManifest, uninstall } from "./install/manifest.ts";
 import { addNote, callerFromEnv, closePairs, forgetNote, formatLine, formatNote, MEM_USAGE, recentNotes, type Scope, SCOPES, searchNotes, showNote, supersedeNote } from "./mem/mem.ts";
+import { writeGraph } from "./mem/graph.ts";
 import { badges, recordOutcome, reflect } from "./mem/outcome.ts";
 import { bound } from "./core/output.ts";
 import { stateDir } from "./core/paths.ts";
@@ -87,7 +88,7 @@ function mem(args: string[]) {
     allowPositionals: true,
     options: {
       scope: { type: "string" }, tags: { type: "string" }, limit: { type: "string" }, all: { type: "boolean" }, reason: { type: "string" },
-      why: { type: "string" }, "half-life-days": { type: "string" },
+      why: { type: "string" }, "half-life-days": { type: "string" }, out: { type: "string" },
     },
   });
   const caller = callerFromEnv();
@@ -139,6 +140,9 @@ same fact or changed value: orch mem forget <outdated id> --reason "..."; differ
     const halfLifeDays = values["half-life-days"] ? Number(values["half-life-days"]) : undefined;
     if (halfLifeDays !== undefined && !(halfLifeDays > 0)) throw new Error("mem reflect: --half-life-days must be a positive number");
     console.log(bound(reflect(caller, { scope, limit, halfLifeDays }), max));
+  } else if (sub === "graph") {
+    const g = writeGraph(caller, { scope, all: values.all, out: values.out ? resolve(values.out) : undefined });
+    console.log(`graph: ${g.nodes} notes, ${g.edges} links\n${g.url}`);
   } else {
     console.log(MEM_USAGE);
     process.exitCode = 2;
@@ -210,7 +214,7 @@ else if (cmd === "doctor") {
   if (!ok) process.exitCode = 1;
 }
 else {
-  console.log("usage: orch install [--profile p] [--harness claude,codex] [--dry-run] [--no-system-deps] | diff [--harness claude,codex] | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget|outcome|reflect | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
+  console.log("usage: orch install [--profile p] [--harness claude,codex] [--dry-run] [--no-system-deps] | diff [--harness claude,codex] | uninstall [--dry-run] | mem add|search|recent|show|supersede|forget|outcome|reflect|graph | docs update|status|search | doctor | hook pre-bash|post-edit|prompt-submit|stop --harness claude|codex|grok");
   process.exitCode = 2;
 }
 } catch (e) {

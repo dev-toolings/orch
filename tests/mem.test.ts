@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addNote, forgetNote, type Caller, listNotes, recentNotes, searchNotes, showNote, supersedeNote } from "../src/mem/mem.ts";
+import { graphHtml, MAX_TAG_NOTES, memGraph } from "../src/mem/graph.ts";
 import { readSignals, recordOutcome, standings } from "../src/mem/outcome.ts";
 import { similar } from "../src/mem/similar.ts";
 
@@ -330,6 +331,61 @@ describe("mem close notes", () => {
       expect(out).toContain(`corrections (latest supersedes)`);
       expect(out).toContain(`${fixed}`);
       expect(out).toContain(`replaces ${cron}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("memGraph links supersedes, shared tags below the hub cap and close pairs, with standings", () => {
+    const local = mkdtempSync(join(tmpdir(), "orch-mem-graph-"));
+    const own = join(local, "repo");
+    mkdirSync(own);
+    spawnSync("git", ["-C", own, "init", "-q"]);
+    const o = { state: local, cwd: own };
+    try {
+      const add = (body: string, tags: string[] = []) => addNote({ body, scope: "project", tags }, lead("claude"), o).id;
+      const oldPort = add("Le port local de l'API Atlas est 4817.");
+      const newPort = supersedeNote(oldPort, { body: "Le port local de l'API Atlas passe à 5100." }, lead("claude"), o).id;
+      const ci = add("La CI tourne sur GitHub Actions.", ["pipeline", "orch"]);
+      const build = add("Le build se lance par make check.", ["pipeline"]);
+      const hubs = Array.from({ length: MAX_TAG_NOTES }, (_, i) => add(`Fait distinct numero ${i} sans rapport`, ["orch"]));
+      add("Le port local de l'API Atlas reste exposé en HTTP.");
+      recordOutcome(ci, "useful", undefined, lead("claude"), o);
+      const active = memGraph(lead("claude"), o);
+      expect(active.nodes.map((n) => n.id)).not.toContain(oldPort);
+      expect(active.nodes.find((n) => n.id === ci)).toMatchObject({ standing: "tentative", badge: "[useful x1]" });
+      expect(active.edges.filter((e) => e.kind === "tags")).toEqual([{ from: ci < build ? ci : build, to: ci < build ? build : ci, kind: "tags", label: "pipeline" }]);
+      expect(active.edges.some((e) => e.kind === "tags" && hubs.includes(e.from) && hubs.includes(e.to))).toBe(false);
+      expect(active.edges.some((e) => e.kind === "similar" && [e.from, e.to].includes(newPort))).toBe(true);
+      const all = memGraph(lead("claude"), { ...o, all: true });
+      expect(all.edges).toContainEqual({ from: newPort, to: oldPort, kind: "supersedes", label: "supersedes" });
+      expect(all.edges.filter((e) => [e.from, e.to].sort().join() === [newPort, oldPort].sort().join())).toHaveLength(1);
+    } finally {
+      rmSync(local, { recursive: true, force: true });
+    }
+  });
+
+  test("graphHtml embeds note text so it cannot close the script tag", () => {
+    const html = graphHtml({ nodes: [{ id: "x", scope: "project", status: "active", date: "2026-10-22", tags: [], label: "a", body: "</script><img src=x onerror=alert(1)>" }], edges: [] }, "t");
+    expect(html.match(/<\/script>/g)).toHaveLength(1);
+    expect(html).toContain("\\u003c/script>\\u003cimg");
+  });
+
+  test("orch mem graph writes one private HTML file and prints its file URL", () => {
+    const root = mkdtempSync(join(tmpdir(), "orch-mem-graph-cli-"));
+    const localRepo = join(root, "repo");
+    mkdirSync(localRepo);
+    spawnSync("git", ["-C", localRepo, "init", "-q"]);
+    const cli = (...args: string[]) => spawnSync(process.execPath, [join(import.meta.dir, "..", "src", "orch.ts"), "mem", ...args], {
+      cwd: localRepo, encoding: "utf8", env: { PATH: process.env.PATH, HOME: join(root, "home"), ORCH_STATE: join(root, "state") },
+    });
+    try {
+      cli("add", "Le port local de l'API Atlas est 4817.");
+      const out = cli("graph").stdout;
+      const file = join(root, "state", "mem", "graph.html");
+      expect(out).toBe(`graph: 1 notes, 0 links\nfile://${file}\n`);
+      expect(readFileSync(file, "utf8")).toContain("le-port-local-de-l-api-atlas-est-4817");
+      expect(statSync(file).mode & 0o777).toBe(0o600);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
