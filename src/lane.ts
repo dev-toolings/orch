@@ -17,6 +17,8 @@ import { fmtUsage, laneReport, reviewReport } from "./lanes/report.ts";
 import { releaseSlot, reserveSlot } from "./lanes/slots.ts";
 import { laneBudget, type MachineFigures } from "./lanes/budget.ts";
 import { missingFields, parseSpec, type Spec } from "./lanes/spec.ts";
+import { appendLedger, readLedger, type Outcome } from "./lanes/ledger.ts";
+import { inScope, type Risk, routeReport, routeSpec, specFeatures } from "./lanes/route.ts";
 import { statusEntries, workerBase } from "./lanes/worktree.ts";
 
 // The worktree is a bare checkout: no installed dependencies, no gitignored
@@ -207,6 +209,12 @@ export interface LaneState {
   channel?: "headless" | "orca";
   pid?: number;
   orca?: { selector: string; terminal?: string };
+  // Read by the integration gate: VERIFY result, paths the spec declared,
+  // risk it carries, files the change touched.
+  verifyOk?: boolean | null;
+  declared?: string[];
+  risk?: Risk[];
+  touched?: string[];
 }
 
 function depthRefusal(label: "LANE REPORT" | "LANE REVIEW" | "LANE ASK", maxDepth: number): string | null {
@@ -230,6 +238,21 @@ async function reserveVerifySlot(state: string, max: number, id: string, timeout
     await Bun.sleep(Math.min(2000, remaining));
   }
   return null;
+}
+
+// Files the lane commit touched, with line counts; binary files count 0.
+function numstat(wt: string, base: string): { files: string[]; insertions: number; deletions: number } {
+  const r = git(wt, "diff", "--numstat", "--no-renames", base, "HEAD");
+  const out = { files: [] as string[], insertions: 0, deletions: 0 };
+  if (!r.ok) return out;
+  for (const line of r.out.split("\n")) {
+    const [add, del, ...path] = line.split("\t");
+    if (!path.length) continue;
+    out.files.push(path.join("\t"));
+    out.insertions += Number(add) || 0;
+    out.deletions += Number(del) || 0;
+  }
+  return out;
 }
 
 export async function laneRun(opts: {
@@ -435,15 +458,23 @@ export async function laneRun(opts: {
       ...(verifyPeakRssMb === undefined ? {} : { verify: verifyPeakRssMb }),
     };
 
+    const features = specFeatures(spec);
+    const diff = numstat(wt, base);
+    const outOfScope = diff.files.filter((f) => !inScope(f, features.files));
     const state: LaneState = {
       id, to: opts.to, repo, base, branch, worktree: wt, status, changed, usage, started, ended: new Date().toISOString(),
       reason, session: process.env.ORCH_SESSION, channel: live.channel, orca: live.orca,
       ...(Object.keys(peakRssMb).length ? { peakRssMb } : {}),
+      verifyOk, declared: features.files, risk: features.risk, touched: diff.files,
     };
+    appendLedger({
+      kind: "run", id, at: state.ended, repo: basename(repo), to: opts.to, model, effort, channel, status, changed, verifyOk,
+      features, diff, outOfScope, durationS: Math.round((Date.parse(state.ended) - Date.parse(started)) / 1000), usage,
+    }, sd);
 
     const report = laneReport({
       to: opts.to, model, effort, channel, channelReason, status, reason, id, base, snapshotOf: b.snapshotOf,
-      branch, setupLine, stat, verifyOut, message, usage, changed, logPath, peakRssMb,
+      branch, setupLine, stat, verifyOut, message, usage, changed, logPath, peakRssMb, outOfScope,
     });
     const bounded = bound(report, p.limits.report_max_bytes);
     writeFileSync(join(dir, "report.txt"), bounded);
@@ -635,6 +666,62 @@ function forgetCallerRepoLane(s: LaneState, out: string[]): void {
   out.push(`forgot ${s.id} (worktree is the caller repo: lane record removed, repo, branch and Orca entry untouched)`);
 }
 
+// One lane record: removed (and its outcome logged) only once nothing is lost.
+function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" | "integrate" = "gc"): boolean {
+  if (s.status === "running" && alive(s.pid)) {
+    out.push(`kept ${s.id} (running)`);
+    return false;
+  }
+  // A record whose worktree is the caller repo owns nothing removable: the
+  // checkout, its branch and any Orca entry for it belong to the operator.
+  // Forget the record only, so it never needs a manual rm.
+  if (resolvedPath(s.worktree) === resolvedPath(s.repo)) {
+    forgetCallerRepoLane(s, out);
+    return false;
+  }
+  // Config-independent status (untracked files and submodules always
+  // shown). A worktree that cannot be inspected is kept too: only an
+  // explicit --drop forces the removal of unknown or uncommitted work.
+  if (s.id !== drop && existsSync(s.worktree)) {
+    const st = statusEntries(s.worktree);
+    if (st === null || st.length) {
+      out.push(`kept ${s.id} (${st === null ? "worktree status failed" : "dirty worktree"})`);
+      return false;
+    }
+  }
+  const merged = git(s.repo, "merge-base", "--is-ancestor", s.branch, "HEAD").ok;
+  const squashed = s.changed && git(s.repo, "diff", "--quiet", "HEAD", s.branch, "--").ok;
+  const applied = s.status === "complete" && s.changed && s.id !== drop && !merged && !squashed
+    && spawnSync("sh", ["-c",
+      'git -C "$1" diff --binary --no-ext-diff --no-textconv "$2" "$3" | git -C "$1" apply --reverse --check',
+      "lane-gc", s.repo, s.base, s.branch,
+    ], { encoding: "utf8" }).status === 0;
+  if (!(merged || squashed || applied || !s.changed || s.id === drop)) {
+    out.push(`kept ${s.id} (${s.status}, not integrated)`);
+    return false;
+  }
+  if (s.orca) {
+    try { removeOrca(s); }
+    catch (e) {
+      if ((e as { code?: string }).code === CALLER_REPO) forgetCallerRepoLane(s, out);
+      else out.push(`kept ${s.id} (${(e as Error).message})`);
+      return false;
+    }
+  } else if (existsSync(s.worktree) && !git(s.repo, "worktree", "remove", "--force", s.worktree).ok) {
+    out.push(`kept ${s.id} (git worktree remove failed)`);
+    return false;
+  }
+  if (git(s.repo, "show-ref", "--verify", "--quiet", `refs/heads/${s.branch}`).ok && !git(s.repo, "branch", "-D", s.branch).ok) {
+    out.push(`kept ${s.id} (branch removal failed)`);
+    return false;
+  }
+  const outcome: Outcome = !s.changed ? "nochange" : merged || squashed || applied ? "integrated" : "dropped";
+  rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
+  appendLedger({ kind: "outcome", id: s.id, at: new Date().toISOString(), outcome, by });
+  out.push(`removed ${s.id}${applied ? " (applied)" : ""}`);
+  return true;
+}
+
 // Removes only what a lane created, and only once nothing is lost: the branch
 // is integrated, its patch reverses cleanly from the repo tree, or it produced no change.
 export function laneGc(drop?: string): string[] {
@@ -650,66 +737,126 @@ export function laneGc(drop?: string): string[] {
       }
     }
   }
-  for (const s of listLanes()) {
-    if (s.status === "running" && alive(s.pid)) {
-      out.push(`kept ${s.id} (running)`);
-      continue;
-    }
-    // A record whose worktree is the caller repo owns nothing removable: the
-    // checkout, its branch and any Orca entry for it belong to the operator.
-    // Forget the record only, so it never needs a manual rm.
-    if (resolvedPath(s.worktree) === resolvedPath(s.repo)) {
-      forgetCallerRepoLane(s, out);
-      continue;
-    }
-    // Config-independent status (untracked files and submodules always
-    // shown). A worktree that cannot be inspected is kept too: only an
-    // explicit --drop forces the removal of unknown or uncommitted work.
-    if (s.id !== drop && existsSync(s.worktree)) {
-      const st = statusEntries(s.worktree);
-      if (st === null || st.length) {
-        out.push(`kept ${s.id} (${st === null ? "worktree status failed" : "dirty worktree"})`);
-        continue;
-      }
-    }
-    const merged = git(s.repo, "merge-base", "--is-ancestor", s.branch, "HEAD").ok;
-    const squashed = s.changed && git(s.repo, "diff", "--quiet", "HEAD", s.branch, "--").ok;
-    const applied = s.status === "complete" && s.changed && s.id !== drop && !merged && !squashed
-      && spawnSync("sh", ["-c",
-        'git -C "$1" diff --binary --no-ext-diff --no-textconv "$2" "$3" | git -C "$1" apply --reverse --check',
-        "lane-gc", s.repo, s.base, s.branch,
-      ], { encoding: "utf8" }).status === 0;
-    if (!(merged || squashed || applied || !s.changed || s.id === drop)) {
-      out.push(`kept ${s.id} (${s.status}, not integrated)`);
-      continue;
-    }
-    if (s.orca) {
-      try { removeOrca(s); }
-      catch (e) {
-        if ((e as { code?: string }).code === CALLER_REPO) forgetCallerRepoLane(s, out);
-        else out.push(`kept ${s.id} (${(e as Error).message})`);
-        continue;
-      }
-    } else if (existsSync(s.worktree) && !git(s.repo, "worktree", "remove", "--force", s.worktree).ok) {
-      out.push(`kept ${s.id} (git worktree remove failed)`);
-      continue;
-    }
-    if (git(s.repo, "show-ref", "--verify", "--quiet", `refs/heads/${s.branch}`).ok && !git(s.repo, "branch", "-D", s.branch).ok) {
-      out.push(`kept ${s.id} (branch removal failed)`);
-      continue;
-    }
-    rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
-    out.push(`removed ${s.id}${applied ? " (applied)" : ""}`);
-  }
+  for (const s of listLanes()) gcLane(s, drop, out);
   for (const o of listOrphans()) gcOrphan(o, drop, out);
   return out;
 }
 
+// The default branch is the operator's: an autonomous integration lands on a
+// feature branch only. main, master and whatever origin/HEAD names count.
+function protectedBranch(repo: string, branch: string): boolean {
+  if (branch === "main" || branch === "master") return true;
+  const remote = git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD");
+  return remote.ok && remote.out.replace(/^origin\//, "") === branch;
+}
+
+// Integrations apply to one shared working tree: one at a time. The lock is a
+// directory (atomic mkdir) holding its owner's pid; a dead owner's is taken over.
+async function withIntegrateLock<T>(fn: () => T): Promise<T | null> {
+  const lock = join(stateDir(), "integrate.lock");
+  mkdirSync(stateDir(), { recursive: true });
+  const until = Date.now() + 60_000;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      writeFileSync(join(lock, "pid"), String(process.pid));
+      break;
+    } catch {
+      const owner = Number(existsSync(join(lock, "pid")) ? readFileSync(join(lock, "pid"), "utf8") : 0);
+      if (owner && !alive(owner)) { rmSync(lock, { recursive: true, force: true }); continue; }
+      if (Date.now() > until) return null;
+      await Bun.sleep(200);
+    }
+  }
+  try { return fn(); } finally { rmSync(lock, { recursive: true, force: true }); }
+}
+
+export interface IntegrateResult { report: string; integrated: boolean }
+
+// The integration gate. A complete lane lands in its caller repo's working
+// tree only when VERIFY passed, every touched file is in the spec's FILES,
+// a risky spec was reviewed, and the repo is on a feature branch. Otherwise
+// nothing moves and the report names each reason.
+export async function laneIntegrate(id: string, opts: { reviewed?: boolean } = {}): Promise<IntegrateResult> {
+  const refused = (why: string[]) => ({
+    report: `LANE INTEGRATE\nSTATUS: refused\nID: ${id}\n${why.map((w) => `GATE: ${w}`).join("\n")}\n`, integrated: false,
+  });
+  const s = listLanes().find((l) => l.id === id);
+  if (!s) return refused(["no lane record with this id (lane status lists them)"]);
+  const why: string[] = [];
+  if (s.status !== "complete") why.push(`status ${s.status}, not complete`);
+  if (!s.changed) why.push("no change to integrate");
+  if (s.verifyOk !== true) why.push(s.verifyOk === undefined ? "no VERIFY result recorded (lane predates the gate)" : "VERIFY did not pass");
+  const names = git(s.repo, "diff", "--name-only", "--no-renames", s.base, s.branch);
+  if (!names.ok) why.push(`cannot diff ${s.branch}: ${names.err.split("\n")[0]}`);
+  const touched = names.ok ? names.out.split("\n").filter(Boolean) : [];
+  if (!s.declared?.length) why.push("no declared FILES recorded");
+  else {
+    const outside = touched.filter((f) => !inScope(f, s.declared!));
+    if (outside.length) why.push(`${outside.length} file(s) outside FILES: ${outside.slice(0, 8).join(", ")}`);
+  }
+  if (s.risk?.length && !opts.reviewed) {
+    why.push(`risk ${s.risk.join(", ")}: run lane review --base ${s.base} --goal "<goal>" --risk high on the branch, then lane integrate ${id} --reviewed`);
+  }
+  const branch = git(s.repo, "branch", "--show-current").out;
+  if (!branch) why.push("caller repo is on a detached HEAD");
+  else if (protectedBranch(s.repo, branch)) why.push(`caller repo is on ${branch}: integrating into the default branch is the operator's call`);
+  if (why.length) return refused(why);
+
+  const patch = 'git -C "$1" diff --binary --no-ext-diff --no-textconv "$2" "$3" | git -C "$1" apply';
+  const result = await withIntegrateLock(() => {
+    const check = spawnSync("sh", ["-c", `${patch} --check`, "lane-integrate", s.repo, s.base, s.branch], { encoding: "utf8" });
+    if (check.status !== 0) return { error: `patch does not apply to the working tree:\n${tail(check.stderr || check.stdout, 8)}` };
+    const apply = spawnSync("sh", ["-c", patch, "lane-integrate", s.repo, s.base, s.branch], { encoding: "utf8" });
+    if (apply.status !== 0) return { error: `git apply failed:\n${tail(apply.stderr || apply.stdout, 8)}` };
+    const out: string[] = [];
+    gcLane(s, undefined, out, "integrate");
+    return { gc: out.join("; ") };
+  });
+  if (result === null) return refused(["another integration held the lock for 60s"]);
+  if ("error" in result) return refused([result.error!]);
+  const stat = tail(git(s.repo, "diff", "--stat", "--", ...touched).out, 12);
+  return {
+    report: `LANE INTEGRATE\nSTATUS: integrated\nID: ${id}\nINTO: ${s.repo} (${branch}, uncommitted)\nAPPLIED:\n${stat || touched.join("\n")}\nGC: ${result.gc || "nothing"}\n`,
+    integrated: true,
+  };
+}
+
+function installedLaneHarnesses(): HarnessId[] {
+  return HARNESS_IDS.filter((h) => (HARNESSES as string[]).includes(h) && installed(h));
+}
+
+export function laneRoute(opts: { specPath: string; profile: Profile; to?: HarnessId; installed?: HarnessId[] }) {
+  const spec = parseSpec(readFileSync(opts.specPath, "utf8"));
+  const features = specFeatures(spec);
+  const route = routeSpec(features, readLedger(), { installed: opts.installed ?? installedLaneHarnesses(), config: opts.profile.route, to: opts.to });
+  return { spec, features, route, report: routeReport(route, features) };
+}
+
+// route, run, gate: one spec end to end. It stops at the first step that
+// needs a human or the lead: an inline-sized spec, a lane that is not
+// complete, or a gate refusal (risk, scope, VERIFY, default branch).
+export async function laneAuto(opts: { specPath: string; repo: string; profile: Profile; to?: HarnessId; effort?: string; channel?: string }): Promise<{ report: string; integrated: boolean }> {
+  const depth = depthRefusal("LANE REPORT", opts.profile.limits.max_depth);
+  if (depth) return { report: depth, integrated: false };
+  const r = laneRoute({ specPath: opts.specPath, profile: opts.profile, to: opts.to });
+  if (r.route.action === "self") return { report: `${r.report}STATUS: self (nothing run: do it inline, or pass --to to force a lane)\n`, integrated: false };
+  if (!r.route.to) return { report: `${r.report}STATUS: unavailable\n`, integrated: false };
+  const run = await laneRun({ to: r.route.to, specPath: opts.specPath, repo: opts.repo, profile: opts.profile, effort: opts.effort, channel: opts.channel });
+  let report = r.report + run.report;
+  if (run.state?.status !== "complete" || !run.state.changed) return { report, integrated: false };
+  const gate = await laneIntegrate(run.state.id);
+  report += gate.report;
+  return { report, integrated: gate.integrated };
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
+    allowPositionals: true,
     options: {
+      reviewed: { type: "boolean" },
       to: { type: "string" }, spec: { type: "string" }, effort: { type: "string" }, profile: { type: "string" },
       repo: { type: "string" }, channel: { type: "string" }, base: { type: "string" }, goal: { type: "string" },
       from: { type: "string" }, drop: { type: "string" }, risk: { type: "string" }, file: { type: "string" },
@@ -727,6 +874,20 @@ async function main() {
     if (!isHarnessId(values.to) || !values.spec) throw new Error("usage: lane run --to claude|codex|grok --spec <file>");
     const { report } = await laneRun({ to: values.to, specPath: values.spec, repo, profile, effort: values.effort, channel: values.channel });
     process.stdout.write(report);
+  } else if (cmd === "route") {
+    if (!values.spec) throw new Error("usage: lane route --spec <file> [--to h]");
+    process.stdout.write(laneRoute({ specPath: values.spec, profile, to: isHarnessId(values.to) ? values.to : undefined }).report);
+  } else if (cmd === "auto") {
+    if (!values.spec) throw new Error("usage: lane auto --spec <file> [--to h] [--effort e] [--channel headless|orca]");
+    const { report, integrated } = await laneAuto({ specPath: values.spec, repo, profile, to: isHarnessId(values.to) ? values.to : undefined, effort: values.effort, channel: values.channel });
+    process.stdout.write(report);
+    if (!integrated) process.exitCode = 3;
+  } else if (cmd === "integrate") {
+    const id = positionals[0];
+    if (!id) throw new Error("usage: lane integrate <id> [--reviewed]");
+    const { report, integrated } = await laneIntegrate(id, { reviewed: values.reviewed });
+    process.stdout.write(report);
+    if (!integrated) process.exitCode = 3;
   } else if (cmd === "review" || cmd === "ask") {
     const envHarness = process.env.ORCH_HARNESS;
     const from = isHarness(values.from) ? values.from : isHarness(envHarness) ? envHarness : "claude";
@@ -748,7 +909,7 @@ async function main() {
   } else if (cmd === "gc") {
     for (const line of laneGc(values.drop)) console.log(line);
   } else {
-    console.log("usage: lane run|review|ask|budget|status|gc");
+    console.log("usage: lane run|route|auto|integrate|review|ask|budget|status|gc");
     process.exitCode = 2;
   }
 }

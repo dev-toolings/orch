@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import type { HarnessId } from "../harness/registry.ts";
+import type { RouteConfig } from "../lanes/route.ts";
 
 export type Harness = "claude" | "codex" | "grok";
 export const HARNESSES: Harness[] = ["claude", "codex", "grok"];
@@ -30,6 +31,9 @@ export interface Profile {
   // Model of the Claude read-only explorer (`lead-explore`); without it the
   // built-in Explore runs on the lead's own model.
   explore?: { claude?: string };
+  // `lane route`: harness order before the ledger has evidence, inline size
+  // threshold, closed runs needed before a record outranks the order.
+  route?: Partial<RouteConfig>;
   limits: {
     max_concurrent_ceiling: number;
     verify_concurrent: number;

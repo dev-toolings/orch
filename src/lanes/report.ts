@@ -22,6 +22,7 @@ export interface LaneReportFields {
   peakRssMb?: { worker?: number; verify?: number };
   changed: boolean;
   logPath: string;
+  outOfScope?: string[];
 }
 
 export interface ReviewReportFields {
@@ -59,6 +60,7 @@ export function laneReport(f: LaneReportFields): string {
     `BRANCH: ${f.branch}`,
     f.setupLine,
     `CHANGES:\n${f.stat}`,
+    f.outOfScope?.length ? `SCOPE: ${f.outOfScope.length} file(s) outside FILES: ${f.outOfScope.slice(0, 8).join(", ")}` : "",
     `VERIFY: ${f.verifyOut}`,
     peak.length ? `PEAK RSS: ${peak.join(", ")}` : "",
     `WORKER SAID: ${f.message.replace(/\s+/g, " ").trim().slice(0, 400) || "(nothing)"}`,
@@ -68,6 +70,7 @@ export function laneReport(f: LaneReportFields): string {
         ? `INTEGRATE: git diff --binary --no-ext-diff --no-textconv ${f.base} ${f.branch} | git apply && lane gc --drop ${f.id}`
         : `INTEGRATE: git merge --squash ${f.branch}  then: lane gc`
       : "",
+    f.changed && f.status === "complete" ? `GATE: lane integrate ${f.id}  (checks VERIFY, scope, risk and branch, then applies and drops)` : "",
     `LOG: ${f.logPath}`,
   ].filter(Boolean).join("\n") + "\n";
 }

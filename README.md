@@ -34,6 +34,9 @@ dépendance externe. Plan :
 | `lane run --to codex --spec f` | Délègue une tâche ; worktree enfant et état visible dans Orca local si disponible ; rapport borné |
 | `lane run --to codex --spec f --channel headless` | Force le canal sans Orca |
 | `lane run --to codex --spec f --channel orca` | Demande le canal Orca ; repli headless si Orca ou son relais est indisponible |
+| `lane route --spec f` | Dit qui fait la spec (le lead si 2 fichiers ou moins, sinon le harness au meilleur historique dans `lanes.jsonl`, à défaut l'ordre du profil) et si une revue `--risk high` est due ; aucun appel de modèle |
+| `lane auto --spec f` | Route, lance la lane, puis passe le gate d'intégration ; s'arrête au premier point qui demande le lead |
+| `lane integrate <id> [--reviewed]` | Gate : VERIFY vert, fichiers touchés tous dans FILES, risque revu, branche de feature ; applique sans commit puis nettoie la lane, sinon refuse avec la raison |
 | `lane review --base <ref> --goal "..."` | Revue croisée lecture seule (sur risque) |
 | `lane status`, `lane gc` | Liste aussi les lanes en cours et les lanes orphelines (dossier sans `state.json`) ; supprime les branches intégrées ou vides, les orphelines sans worktree, et termine les nettoyages Orca restés en attente. Une orpheline avec worktree reste jusqu'à `lane gc --drop <id>` |
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
