@@ -19,6 +19,7 @@
 //      BENCH_REPS=5 BENCH_PAR=6 BENCH_SEED=1 BENCH_SPECS=<dir with the edit specs>
 import { appendFileSync, existsSync, mkdirSync, renameSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 const REPOS = process.env.BENCH_REPOS ?? "/tmp/tokbench/repos";
 const HOMES = process.env.BENCH_HOMES ?? "/tmp/tokbench/h";
@@ -26,7 +27,7 @@ const RTK_BIN = process.env.BENCH_RTK_BIN ?? "/tmp/tokbench/rtkbin";
 const MODELS = { claude: "sonnet", codex: "gpt-6-luna", grok: "grok-4.7-build-fast" } as const;
 type H = keyof typeof MODELS;
 // full: the operator's real config (MCP servers, skills, CODEX_HOME), floor only.
-const ARMS = ["base", "ctx", "rtk", "ctxrtk", "ctxhook", "ctxhook0", "full"] as const;
+const ARMS = ["base", "ctx", "rtk", "ctxrtk", "ctxhook", "ctxhook0", "ctxhookn", "full"] as const;
 const CTX_BIN = process.env.BENCH_CTX_BIN;
 type Arm = (typeof ARMS)[number];
 
@@ -55,7 +56,7 @@ export const QUESTIONS: Q[] = [
 
 const CTX_HINT = `\n\nA ctx index of this repository is ready. Locate code with the ctx CLI first: \`ctx search '<text>' --mode literal|symbol|regex\`, \`ctx graph --op callers|definitions --symbol <name>\`, \`ctx pack '<question>'\`, \`ctx read <file> --lines A:B|--symbol <name>|--outline\`; then read only the lines you need.`;
 const RTK_HINT = "\n\nPrefix shell commands with `rtk` (for example `rtk grep`, `rtk read`, `rtk git log`): it condenses their output.";
-const SPECS = process.env.BENCH_SPECS ?? "/tmp/orch-bench/specs";
+const SPECS = process.env.BENCH_SPECS ?? join(import.meta.dir, "token-bench-specs");
 const EDIT_FRAME = "Implement this spec in the repository in the current directory. Touch only the files it lists. Run its VERIFY command before you finish and fix what fails. Do not commit.\n\n";
 const FRAME = "Answer this question about the repository in the current directory. Read-only: do not modify files. Cite file paths. Be concise.\n\nQuestion: ";
 
@@ -106,7 +107,10 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   const useCtx = arm === "ctx" || arm === "ctxrtk";
   const rtkData = join(dir, "rtk", tag);
   // ctxhook0: the same hooks with no appended source (homes claude-ctxhook0-settings.json, codex-ctxhook0).
-  const hook = arm === "ctxhook" || arm === "ctxhook0";
+  // ctxhookn (Claude): the ctxhook hooks plus a SessionStart note asking to batch
+  // independent tool calls (claude-ctxhookn-settings.json). Rejected on 2026-10-23:
+  // Claude edit +18% raw input, +22% cost over 12 pairs.
+  const hook = arm === "ctxhook" || arm === "ctxhook0" || arm === "ctxhookn";
   const path0 = CTX_BIN ? `${CTX_BIN}:${env0.PATH}` : env0.PATH!;
   const env = { ...env0, RTK_BENCH_DATA: rtkData, PATH: rtk ? `${RTK_BIN}:${path0}` : path0 };
   if (q.edit) cwd = await editCopy(q, tag, dir, useCtx || hook);
@@ -123,7 +127,9 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   const row = { h, arm, q: q.id, rep, warm, ok: false, verify: null as boolean | null, gold: null as string | null, outScope: [] as string[], session: null as string | null, score: 0, max: q.facts.length, uncached: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0,
     turns: null as number | null, usd: null as number | null, secs: 0, rtkCmds: null as number | null, answer: "" };
   if (h === "claude") {
-    r = await sh(["claude", "-p", prompt, "--model", MODELS.claude, ...(full ? [] : ["--strict-mcp-config", "--disable-slash-commands"]), "--allowedTools", q.edit ? "Bash,Read,Grep,Glob,Edit,Write" : "Bash,Read,Grep,Glob",
+    // Every arm but full skips the user settings: since `ctx hook install` they hold
+    // the ctx hooks, which would run in the base arm too (2026-10-23).
+    r = await sh(["claude", "-p", prompt, "--model", MODELS.claude, ...(full ? [] : ["--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "project,local"]), "--allowedTools", q.edit ? "Bash,Read,Grep,Glob,Edit,Write" : "Bash,Read,Grep,Glob",
       "--output-format", "json", ...(rtk || hook ? ["--settings", join(HOMES, hook ? `claude-${arm}-settings.json` : "claude-rtk-settings.json")] : [])], cwd, env);
     try {
       const j = JSON.parse(r.out); const u = j.usage ?? {};
@@ -187,6 +193,9 @@ async function main() {
   const arms = (process.env.BENCH_ARMS ?? ARMS.join(",")).split(",") as Arm[];
   const qs = process.env.BENCH_Q ? QUESTIONS.filter((q) => process.env.BENCH_Q!.split(",").includes(q.id)) : QUESTIONS.filter((q) => !q.edit);
   const reps = Number(process.env.BENCH_REPS ?? 5), par = Number(process.env.BENCH_PAR ?? 6);
+  // Grok reads ~/.grok/hooks/*.json in every arm: a global ctx hook would run in base too.
+  if (hs.includes("grok") && existsSync(join(homedir(), ".grok/hooks/ctx.json")))
+    throw new Error("~/.grok/hooks/ctx.json would run in every Grok arm: run `ctx hook uninstall --harness grok` first");
   // Warm the prompt cache once per harness and arm (discarded), so the first
   // measured run does not pay the cache write the others then read.
   const results = join(dir, "results.jsonl");
