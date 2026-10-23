@@ -25,7 +25,7 @@ const RTK_BIN = process.env.BENCH_RTK_BIN ?? "/tmp/tokbench/rtkbin";
 const MODELS = { claude: "sonnet", codex: "gpt-6-luna", grok: "grok-4.7-build-fast" } as const;
 type H = keyof typeof MODELS;
 // full: the operator's real config (MCP servers, skills, CODEX_HOME), floor only.
-const ARMS = ["base", "ctx", "rtk", "ctxrtk", "ctxhook", "full"] as const;
+const ARMS = ["base", "ctx", "rtk", "ctxrtk", "ctxhook", "ctxhook0", "full"] as const;
 const CTX_BIN = process.env.BENCH_CTX_BIN;
 type Arm = (typeof ARMS)[number];
 
@@ -94,25 +94,26 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   const rtk = arm === "rtk" || arm === "ctxrtk";
   const useCtx = arm === "ctx" || arm === "ctxrtk";
   const rtkData = join(dir, "rtk", tag);
-  const hook = arm === "ctxhook";
+  // ctxhook0: the same hooks with no appended source (homes claude-ctxhook0-settings.json, codex-ctxhook0).
+  const hook = arm === "ctxhook" || arm === "ctxhook0";
   const path0 = CTX_BIN ? `${CTX_BIN}:${env0.PATH}` : env0.PATH!;
   const env = { ...env0, RTK_BENCH_DATA: rtkData, PATH: rtk ? `${RTK_BIN}:${path0}` : path0 };
-  if (q.edit) cwd = await editCopy(q, tag, dir, useCtx || arm === "ctxhook");
+  if (q.edit) cwd = await editCopy(q, tag, dir, useCtx || hook);
   const body = q.edit ? EDIT_FRAME + readFileSync(join(SPECS, q.edit.spec), "utf8") : FRAME + q.text;
   const full = arm === "full";
-  // A per-run nonce first: identical prompts would otherwise share a prompt cache
-  // across runs that real, distinct sessions never get (the system prefix still caches).
-  // Off by default: the raw-input ratio ignores caching, and Codex reads a nonce as a
-  // command to run or a name to search (5 of 73 base runs, 17 of 73 ctxhook runs on
-  // 2026-10-23), which skews the very ratio it was meant to protect. BENCH_NONCE=1.
-  const nonce = process.env.BENCH_NONCE === "1" ? `Run ${Math.random().toString(36).slice(2, 10)}.\n` : "";
-  const prompt = nonce + body + (useCtx && q.id !== "floor" ? CTX_HINT : "") + (rtk && h === "grok" && q.id !== "floor" ? RTK_HINT : "");
+  // A per-run reference at the end: identical runs would otherwise share a prompt cache
+  // for every turn, which real, distinct sessions never get; the system prefix and the
+  // task text still cache, as they do in a session. At the start, as an opening "Run
+  // xxxx.", Codex read it as a command or a name to search (5 of 73 base runs, 17 of
+  // 73 hook runs on 2026-10-23). BENCH_NONCE=0 drops it.
+  const nonce = process.env.BENCH_NONCE === "0" ? "" : `\n\n(ref ${Math.random().toString(36).slice(2, 10)})\n`;
+  const prompt = body + (useCtx && q.id !== "floor" ? CTX_HINT : "") + (rtk && h === "grok" && q.id !== "floor" ? RTK_HINT : "") + nonce;
   let r: Awaited<ReturnType<typeof sh>>;
   const row = { h, arm, q: q.id, rep, warm, ok: false, verify: null as boolean | null, gold: null as string | null, outScope: [] as string[], session: null as string | null, score: 0, max: q.facts.length, uncached: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0,
     turns: null as number | null, usd: null as number | null, secs: 0, rtkCmds: null as number | null, answer: "" };
   if (h === "claude") {
     r = await sh(["claude", "-p", prompt, "--model", MODELS.claude, ...(full ? [] : ["--strict-mcp-config", "--disable-slash-commands"]), "--allowedTools", q.edit ? "Bash,Read,Grep,Glob,Edit,Write" : "Bash,Read,Grep,Glob",
-      "--output-format", "json", ...(rtk || hook ? ["--settings", join(HOMES, hook ? "claude-ctxhook-settings.json" : "claude-rtk-settings.json")] : [])], cwd, env);
+      "--output-format", "json", ...(rtk || hook ? ["--settings", join(HOMES, hook ? `claude-${arm}-settings.json` : "claude-rtk-settings.json")] : [])], cwd, env);
     try {
       const j = JSON.parse(r.out); const u = j.usage ?? {};
       Object.assign(row, { answer: j.result ?? "", uncached: u.input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0,
@@ -121,7 +122,7 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   } else if (h === "codex") {
     const last = join(dir, "last", `${tag}.txt`);
     r = await sh(["codex", "exec", "--json", "-C", cwd, "-s", q.edit ? "workspace-write" : "read-only", "--skip-git-repo-check", "-m", MODELS.codex, "-c", 'model_reasoning_effort="medium"',
-      ...(rtk || hook ? ["--dangerously-bypass-hook-trust"] : []), "-o", last, prompt], cwd, full ? env : { ...env, CODEX_HOME: join(HOMES, hook ? "codex-ctxhook" : rtk ? "codex-rtk" : "codex-base") });
+      ...(rtk || hook ? ["--dangerously-bypass-hook-trust"] : []), "-o", last, prompt], cwd, full ? env : { ...env, CODEX_HOME: join(HOMES, hook ? `codex-${arm}` : rtk ? "codex-rtk" : "codex-base") });
     let input = 0, cached = 0, turns = 0;
     for (const line of r.out.split("\n")) {
       try {
