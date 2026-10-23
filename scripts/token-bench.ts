@@ -16,7 +16,7 @@
 // Usage: bun scripts/token-bench.ts [outDir]
 // Env: BENCH_H=claude,codex,grok BENCH_ARMS=base,ctx,rtk,ctxrtk,full BENCH_Q=o1,c1 (e2,e3: edit tasks)
 //      BENCH_REPS=5 BENCH_PAR=6 BENCH_SEED=1 BENCH_SPECS=<dir with the edit specs>
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const REPOS = process.env.BENCH_REPOS ?? "/tmp/tokbench/repos";
@@ -75,10 +75,16 @@ async function sh(cmd: string[], cwd: string, env: Record<string, string>, timeo
 
 // A writable copy at the spec's base commit, provisioned like a lane worktree.
 async function editCopy(q: Q, tag: string, dir: string, useCtx: boolean): Promise<string> {
-  const wt = join(dir, "wt", tag);
+  // The path is in the model's view: name it by a hash, never by the arm.
+  const wt = join(dir, "wt", Bun.hash(tag).toString(36));
   await sh(["git", "-C", join(REPOS, q.repo), "worktree", "add", "-q", "--detach", wt, q.edit!.base], "/tmp", env0);
   await sh(["bun", "install", "--frozen-lockfile"], wt, env0);
   if (useCtx) { await sh(["ctx", "init"], wt, env0); await sh(["ctx", "index", "."], wt, env0); }
+  // The ctx files must not show in git status: a model that sees `?? .ctxignore`
+  // goes and inspects it, a cost no real session (which ignores it once) pays.
+  const exclude = join(REPOS, q.repo, ".git", "info", "exclude");
+  const current = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
+  if (!current.includes(".ctxignore")) appendFileSync(exclude, `${current.endsWith("\n") || !current ? "" : "\n"}.ctxignore\n.ctx/\n`);
   return wt;
 }
 
@@ -96,7 +102,10 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   const full = arm === "full";
   // A per-run nonce first: identical prompts would otherwise share a prompt cache
   // across runs that real, distinct sessions never get (the system prefix still caches).
-  const nonce = process.env.BENCH_NONCE === "0" ? "" : `Run ${tag}-${Math.random().toString(36).slice(2, 8)}.\n`;
+  // Off by default: the raw-input ratio ignores caching, and Codex reads a nonce as a
+  // command to run or a name to search (5 of 73 base runs, 17 of 73 ctxhook runs on
+  // 2026-10-23), which skews the very ratio it was meant to protect. BENCH_NONCE=1.
+  const nonce = process.env.BENCH_NONCE === "1" ? `Run ${Math.random().toString(36).slice(2, 10)}.\n` : "";
   const prompt = nonce + body + (useCtx && q.id !== "floor" ? CTX_HINT : "") + (rtk && h === "grok" && q.id !== "floor" ? RTK_HINT : "");
   let r: Awaited<ReturnType<typeof sh>>;
   const row = { h, arm, q: q.id, rep, warm, ok: false, verify: null as boolean | null, gold: null as string | null, outScope: [] as string[], session: null as string | null, score: 0, max: q.facts.length, uncached: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0,
