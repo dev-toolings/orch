@@ -54,6 +54,18 @@ function countFiles(dir: string): number {
   return n;
 }
 
+export function dirBytes(dir: string): number {
+  let stat;
+  try {
+    stat = lstatSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  if (!stat.isDirectory()) return stat.isFile() ? stat.size : 0;
+  return readdirSync(dir).reduce((total, name) => total + dirBytes(join(dir, name)), 0);
+}
+
 const metaPath = (dir: string) => join(dir, ".orch-docs.json");
 
 export function readMeta(id: string, root = docsDir()): SourceMeta | null {
@@ -134,12 +146,23 @@ export function pruneSources(sources: Source[], root = docsDir()): string[] {
 }
 
 export function statusLines(sources: Source[], root = docsDir()): string[] {
+  let totalBytes = 0;
+  let onDisk = false;
   const lines = sources.map((s) => {
     const m = readMeta(s.id, root);
     if (!m) return `${s.id.padEnd(20)} ${s.stack.padEnd(12)} not fetched`;
-    return `${s.id.padEnd(20)} ${s.stack.padEnd(12)} ${m.version.padEnd(9)} ${m.fetched.slice(0, 10)}  ${String(m.files).padStart(6)} files  ${m.indexed ? "indexed" : "NOT INDEXED"}`;
+    const bytes = dirBytes(join(root, s.id));
+    totalBytes += bytes;
+    onDisk = true;
+    return `${s.id.padEnd(20)} ${s.stack.padEnd(12)} ${m.version.padEnd(9)} ${m.fetched.slice(0, 10)}  ${String(m.files).padStart(6)} files  ${m.indexed ? "indexed" : "NOT INDEXED"}  ${(bytes / 1048576).toFixed(1)} MB`;
   });
-  lines.push(...orphanSources(sources, root).map((id) => `${id.padEnd(20)} orphan       not in catalog/docs.yaml (orch docs update removes it)`));
+  lines.push(...orphanSources(sources, root).map((id) => {
+    const bytes = dirBytes(join(root, id));
+    totalBytes += bytes;
+    onDisk = true;
+    return `${id.padEnd(20)} orphan       not in catalog/docs.yaml (orch docs update removes it)  ${(bytes / 1048576).toFixed(1)} MB`;
+  }));
+  if (onDisk) lines.push(`${"total".padEnd(20)} ${(totalBytes / 1048576).toFixed(1)} MB on disk`);
   return lines;
 }
 
