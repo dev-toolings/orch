@@ -17,7 +17,7 @@ import { fmtUsage, laneReport, reviewReport } from "./lanes/report.ts";
 import { releaseSlot, reserveSlot } from "./lanes/slots.ts";
 import { laneBudget, type MachineFigures } from "./lanes/budget.ts";
 import { EFFORTS, missingFields, parseSpec, type Spec } from "./lanes/spec.ts";
-import { appendLedger, lastVerdict, parseVerdict, readLedger, type Outcome, type Verdict } from "./lanes/ledger.ts";
+import { appendLedger, lastVerdict, parseVerdict, readLedger, summarize, type Outcome, type Verdict } from "./lanes/ledger.ts";
 import { inScope, type Risk, routeReport, routeSpec, specFeatures } from "./lanes/route.ts";
 import { statusEntries, workerBase } from "./lanes/worktree.ts";
 
@@ -950,10 +950,16 @@ async function main() {
     for (const o of listOrphans()) {
       console.log(`${o.id}  orphan  ${o.repo ?? (o.worktree ? "repo unknown" : "no worktree")}  ${o.dirty === null ? "status unknown" : `${o.dirty} uncommitted`}`);
     }
+  } else if (cmd === "stats") {
+    const summaries = summarize(readLedger());
+    if (!summaries.length) console.log("no lane recorded yet");
+    for (const summary of summaries) {
+      console.log(`${summary.to.padEnd(7)} runs ${summary.runs}  integrated ${summary.integrated}  failed ${summary.failed}  tokens ~${summary.meanTokens ?? "-"}  duration ${summary.meanDurationS ?? "-"}s  gate refusals ${summary.gateRefusals}`);
+    }
   } else if (cmd === "gc") {
     for (const line of laneGc(values.drop)) console.log(line);
   } else {
-    console.log("usage: lane run|route|auto|integrate|review|ask|budget|status|gc");
+    console.log("usage: lane run|route|auto|integrate|review|ask|budget|status|stats|gc");
     process.exitCode = 2;
   }
 }
