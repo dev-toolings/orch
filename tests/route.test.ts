@@ -97,6 +97,18 @@ describe("routeSpec", () => {
     expect(r).toMatchObject({ to: "codex", effort: "medium" });
   });
 
+  test("effort: medium is switched off once it fails 25% of 10 MECHANICAL runs", () => {
+    const mech = { ...feat(three), mechanical: true, fingerprint: "new" };
+    const medRun = (id: string, ok: boolean): LedgerRow[] => {
+      const r = run(id, "codex", "complete");
+      return [{ ...r, effort: "medium", features: { ...r.features, mechanical: true } }, { kind: "outcome", id, at: "", outcome: ok ? "integrated" : "dropped", by: "gc" }];
+    };
+    const rows = (ko: number) => Array.from({ length: 10 }, (_, i) => medRun(`m${i}`, i >= ko)).flat();
+    expect(routeEffort(mech, rows(2), "xhigh", DEFAULT_ROUTE).effort).toBe("medium");
+    expect(routeEffort(mech, rows(3), "xhigh", DEFAULT_ROUTE)).toMatchObject({ effort: "xhigh" });
+    expect(routeEffort(mech, rows(3), "xhigh", DEFAULT_ROUTE).why).toContain("medium failed 3/10");
+  });
+
   test("specFeatures reads MECHANICAL and a stable fingerprint", () => {
     const a = specFeatures(parseSpec("OBJECTIVE: do  it\nFILES: b.ts, a.ts\nMECHANICAL: yes"));
     const b = specFeatures(parseSpec("OBJECTIVE: do it\nFILES: a.ts\nb.ts"));

@@ -146,6 +146,14 @@ export function routeEffort(f: SpecFeatures, rows: LedgerRow[], profileEffort: s
   const failedBefore = f.fingerprint && verdicts(rows).some((v) => !v.ok && v.run.features?.fingerprint === f.fingerprint);
   if (failedBefore) return { effort: atLeastHigh, why: `this spec already failed once: effort ${atLeastHigh} at least` };
   const codeStacks = f.stacks.filter((s) => !SUPPORT_STACKS.has(s));
+  // Medium pays only while it rarely fails: a failure costs the medium run
+  // plus the escalated retry. Measured on 2026-10-23: medium -25% tokens,
+  // -52% time, 1 failure in 3. Break-even is a 25% failure rate.
+  const medium = verdicts(rows).filter((v) => v.run.features?.mechanical && v.run.effort === "medium");
+  const mediumFails = medium.filter((v) => !v.ok).length;
+  if (f.mechanical && medium.length >= cfg.min_samples * 2 && mediumFails / medium.length >= 0.25) {
+    return { effort: profileEffort, why: `medium failed ${mediumFails}/${medium.length} MECHANICAL runs (>= 25%): profile effort ${profileEffort ?? "default"}` };
+  }
   if (f.mechanical && f.files.length <= cfg.medium_max_files && codeStacks.length <= 1) {
     const effort = profileEffort && rank(profileEffort) < rank("medium") ? profileEffort : "medium";
     return { effort, why: `MECHANICAL, no risk, ${f.files.length} file(s), ${codeStacks.length || "no"} code stack: effort ${effort}` };
