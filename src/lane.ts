@@ -671,7 +671,7 @@ function forgetCallerRepoLane(s: LaneState, out: string[]): void {
 }
 
 // One lane record: removed (and its outcome logged) only once nothing is lost.
-function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" | "integrate" = "gc"): boolean {
+function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" | "integrate" = "gc", superseded = false): boolean {
   if (s.status === "running" && alive(s.pid)) {
     out.push(`kept ${s.id} (running)`);
     return false;
@@ -719,7 +719,7 @@ function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" 
     out.push(`kept ${s.id} (branch removal failed)`);
     return false;
   }
-  const outcome: Outcome = !s.changed ? "nochange" : merged || squashed || applied ? "integrated" : "dropped";
+  const outcome: Outcome = !s.changed ? "nochange" : merged || squashed || applied ? "integrated" : superseded && s.id === drop ? "superseded" : "dropped";
   rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
   appendLedger({ kind: "outcome", id: s.id, at: new Date().toISOString(), outcome, by });
   out.push(`removed ${s.id}${applied ? " (applied)" : ""}`);
@@ -728,7 +728,7 @@ function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" 
 
 // Removes only what a lane created, and only once nothing is lost: the branch
 // is integrated, its patch reverses cleanly from the repo tree, or it produced no change.
-export function laneGc(drop?: string): string[] {
+export function laneGc(drop?: string, opts: { superseded?: boolean } = {}): string[] {
   const out: string[] = [];
   // Pinned grok copies of older versions (about 300 MB each): keep the current one only.
   const binDir = join(stateDir(), "bin");
@@ -741,7 +741,7 @@ export function laneGc(drop?: string): string[] {
       }
     }
   }
-  for (const s of listLanes()) gcLane(s, drop, out);
+  for (const s of listLanes()) gcLane(s, drop, out, "gc", opts.superseded);
   for (const o of listOrphans()) gcOrphan(o, drop, out);
   return out;
 }
@@ -897,7 +897,7 @@ async function main() {
     args: rest,
     allowPositionals: true,
     options: {
-      model: { type: "string" }, lane: { type: "string" },
+      model: { type: "string" }, lane: { type: "string" }, superseded: { type: "boolean" },
       to: { type: "string" }, spec: { type: "string" }, effort: { type: "string" }, profile: { type: "string" },
       repo: { type: "string" }, channel: { type: "string" }, base: { type: "string" }, goal: { type: "string" },
       from: { type: "string" }, drop: { type: "string" }, risk: { type: "string" }, file: { type: "string" },
@@ -959,7 +959,8 @@ async function main() {
       console.log(`${summary.to.padEnd(7)} runs ${summary.runs}  integrated ${summary.integrated}  failed ${summary.failed}  tokens ~${summary.meanTokens ?? "-"}  duration ${summary.meanDurationS ?? "-"}s  gate refusals ${summary.gateRefusals}`);
     }
   } else if (cmd === "gc") {
-    for (const line of laneGc(values.drop)) console.log(line);
+    if (values.superseded && !values.drop) throw new Error("usage: lane gc [--drop <id> [--superseded]]");
+    for (const line of laneGc(values.drop, { superseded: values.superseded })) console.log(line);
   } else {
     console.log("usage: lane run|route|auto|integrate|review|ask|budget|status|stats|gc");
     process.exitCode = 2;

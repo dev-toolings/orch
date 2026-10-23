@@ -26,7 +26,9 @@ export interface RunRecord {
   usage: Usage;
 }
 
-export type Outcome = "integrated" | "dropped" | "nochange";
+// superseded: dropped because another lane for the same spec was kept (an
+// A/B, a retry): it says nothing about the worker, so routing ignores it.
+export type Outcome = "integrated" | "dropped" | "nochange" | "superseded";
 
 export interface OutcomeRecord {
   kind: "outcome";
@@ -88,6 +90,7 @@ export function verdicts(rows: LedgerRow[]): { run: RunRecord; ok: boolean }[] {
     if (r.kind !== "run") return [];
     const o = outcome.get(r.id);
     if (o === "integrated") return [{ run: r, ok: true }];
+    if (o === "superseded") return [];
     if (o === "dropped" || ["failed", "refused", "timeout"].includes(r.status)) return [{ run: r, ok: false }];
     return [];
   });

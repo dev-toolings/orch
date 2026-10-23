@@ -40,7 +40,7 @@ dépendance externe. Plan :
 | `lane review --lane <id>` | Revue de la branche d'une lane dans un checkout jetable ; le verdict (`ship`, `fix-first`, `rethink`) est journalisé pour le gate |
 | `--model m`, `--effort e` | Sur `run`, `auto`, `review` et `ask` : épinglent le modèle et l'effort pour cet appel, sans toucher au profil |
 | `lane review --base <ref> --goal "..."` | Revue croisée lecture seule (sur risque) |
-| `lane status`, `lane gc` | Liste aussi les lanes en cours et les lanes orphelines (dossier sans `state.json`) ; supprime les branches intégrées ou vides, les orphelines sans worktree, et termine les nettoyages Orca restés en attente. Une orpheline avec worktree reste jusqu'à `lane gc --drop <id>` |
+| `lane status`, `lane gc` | Liste aussi les lanes en cours et les lanes orphelines (dossier sans `state.json`) ; supprime les branches intégrées ou vides, les orphelines sans worktree, et termine les nettoyages Orca restés en attente. Une orpheline avec worktree reste jusqu'à `lane gc --drop <id>`. `--drop <id> --superseded` écarte une version perdante d'un A/B ou d'un nouvel essai : le routage l'ignore au lieu de la compter en échec |
 | `lane stats` | Résume les runs, intégrations, échecs, tokens, durées et refus du gate par harness |
 | `orch install [--dry-run] [--no-system-deps]`, `orch diff`, `orch uninstall` | Installe ou retire les fichiers du lead, avec manifeste ; installe aussi `bubblewrap` et `socat` si absents (sandbox du worker Claude) |
 | `orch doctor` | Dit si chaque worker (codex, grok, claude) et le lead Codex peuvent tourner ici, et ce qui manque |

@@ -122,6 +122,11 @@ describe("routeSpec", () => {
     expect(r.to).toBe("codex");
   });
 
+  test("a superseded run (A/B loser) counts neither for nor against its harness", () => {
+    const rows: LedgerRow[] = [...history("codex", 5, 0), run("ab", "codex", "complete"), { kind: "outcome", id: "ab", at: "", outcome: "superseded", by: "gc" }];
+    expect(routeSpec(feat(three), rows, { installed: [...installed] }).stats.find((s) => s.to === "codex")).toMatchObject({ n: 5, ok: 5 });
+  });
+
   test("risk asks for a high review; --to overrides the size rule", () => {
     const r = routeSpec(feat(["src/auth.ts"], ["security"]), [], { installed: [...installed], to: "grok" });
     expect(r).toMatchObject({ action: "lane", to: "grok", review: "high" });
@@ -240,8 +245,8 @@ describe("ledger and integration gate", () => {
     sh(repo, "git checkout -q feat/x");
     expect((await laneIntegrate(risky.state!.id)).integrated).toBe(true);
 
-    expect(laneGc(out.state!.id)).toContain(`removed ${out.state!.id}`);
-    expect(readLedger().find((r) => r.id === out.state!.id && r.kind === "outcome")).toMatchObject({ outcome: "dropped", by: "gc" });
+    expect(laneGc(out.state!.id, { superseded: true })).toContain(`removed ${out.state!.id}`);
+    expect(readLedger().find((r) => r.id === out.state!.id && r.kind === "outcome")).toMatchObject({ outcome: "superseded", by: "gc" });
   });
 
   test("auto: an inline-sized spec runs nothing; a larger one routes, runs and integrates", async () => {
