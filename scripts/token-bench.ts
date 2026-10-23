@@ -9,7 +9,10 @@
 // `ctx index .` in each; install rtk-oss and point BENCH_RTK_BIN at a directory
 // holding an `rtk` wrapper; build two throwaway CODEX_HOME dirs (codex-base,
 // codex-rtk with rtk's hooks.json) under BENCH_HOMES, plus
-// claude-rtk-settings.json (rtk's PreToolUse hook).
+// claude-rtk-settings.json (rtk's PreToolUse hook). The ctxhook arm (Claude and
+// Codex only) needs claude-ctxhook-settings.json and a codex-ctxhook CODEX_HOME
+// whose hooks.json runs `ctx hook rewrite --harness <h>`. BENCH_CTX_BIN puts a
+// ctx build first on PATH in every arm.
 // Usage: bun scripts/token-bench.ts [outDir]
 // Env: BENCH_H=claude,codex,grok BENCH_ARMS=base,ctx,rtk,ctxrtk,full BENCH_Q=o1,c1 (e2,e3: edit tasks)
 //      BENCH_REPS=5 BENCH_PAR=6 BENCH_SEED=1 BENCH_SPECS=<dir with the edit specs>
@@ -22,7 +25,8 @@ const RTK_BIN = process.env.BENCH_RTK_BIN ?? "/tmp/tokbench/rtkbin";
 const MODELS = { claude: "sonnet", codex: "gpt-6-luna", grok: "grok-4.7-build-fast" } as const;
 type H = keyof typeof MODELS;
 // full: the operator's real config (MCP servers, skills, CODEX_HOME), floor only.
-const ARMS = ["base", "ctx", "rtk", "ctxrtk", "full"] as const;
+const ARMS = ["base", "ctx", "rtk", "ctxrtk", "ctxhook", "full"] as const;
+const CTX_BIN = process.env.BENCH_CTX_BIN;
 type Arm = (typeof ARMS)[number];
 
 type Q = { id: string; repo: string; text: string; facts: RegExp[]; edit?: { spec: string; base: string; verify: string; gold: [string, string] } };
@@ -48,7 +52,7 @@ export const QUESTIONS: Q[] = [
     facts: [/briefing\.rs/, /mcp\.rs/, /runner\.rs/, /main\.rs/] },
 ];
 
-const CTX_HINT = `\n\nA ctx index of this repository is ready. Locate code with the ctx CLI first: \`ctx search '<text>' --mode literal|symbol|regex\`, \`ctx graph --op callers|definitions --symbol <name>\`, \`ctx pack '<question>'\`; then read only the lines you need.`;
+const CTX_HINT = `\n\nA ctx index of this repository is ready. Locate code with the ctx CLI first: \`ctx search '<text>' --mode literal|symbol|regex\`, \`ctx graph --op callers|definitions --symbol <name>\`, \`ctx pack '<question>'\`, \`ctx read <file> --lines A:B|--symbol <name>|--outline\`; then read only the lines you need.`;
 const RTK_HINT = "\n\nPrefix shell commands with `rtk` (for example `rtk grep`, `rtk read`, `rtk git log`): it condenses their output.";
 const SPECS = process.env.BENCH_SPECS ?? "/tmp/orch-bench/specs";
 const EDIT_FRAME = "Implement this spec in the repository in the current directory. Touch only the files it lists. Run its VERIFY command before you finish and fix what fails. Do not commit.\n\n";
@@ -84,8 +88,10 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   const rtk = arm === "rtk" || arm === "ctxrtk";
   const useCtx = arm === "ctx" || arm === "ctxrtk";
   const rtkData = join(dir, "rtk", tag);
-  const env = { ...env0, RTK_BENCH_DATA: rtkData, PATH: rtk ? `${RTK_BIN}:${env0.PATH}` : env0.PATH! };
-  if (q.edit) cwd = await editCopy(q, tag, dir, useCtx);
+  const hook = arm === "ctxhook";
+  const path0 = CTX_BIN ? `${CTX_BIN}:${env0.PATH}` : env0.PATH!;
+  const env = { ...env0, RTK_BENCH_DATA: rtkData, PATH: rtk ? `${RTK_BIN}:${path0}` : path0 };
+  if (q.edit) cwd = await editCopy(q, tag, dir, useCtx || arm === "ctxhook");
   const body = q.edit ? EDIT_FRAME + readFileSync(join(SPECS, q.edit.spec), "utf8") : FRAME + q.text;
   const full = arm === "full";
   const prompt = body + (useCtx && q.id !== "floor" ? CTX_HINT : "") + (rtk && h === "grok" && q.id !== "floor" ? RTK_HINT : "");
@@ -94,7 +100,7 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
     turns: null as number | null, usd: null as number | null, secs: 0, rtkCmds: null as number | null, answer: "" };
   if (h === "claude") {
     r = await sh(["claude", "-p", prompt, "--model", MODELS.claude, ...(full ? [] : ["--strict-mcp-config", "--disable-slash-commands"]), "--allowedTools", q.edit ? "Bash,Read,Grep,Glob,Edit,Write" : "Bash,Read,Grep,Glob",
-      "--output-format", "json", ...(rtk ? ["--settings", join(HOMES, "claude-rtk-settings.json")] : [])], cwd, env);
+      "--output-format", "json", ...(rtk || hook ? ["--settings", join(HOMES, hook ? "claude-ctxhook-settings.json" : "claude-rtk-settings.json")] : [])], cwd, env);
     try {
       const j = JSON.parse(r.out); const u = j.usage ?? {};
       Object.assign(row, { answer: j.result ?? "", uncached: u.input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0,
@@ -103,7 +109,7 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   } else if (h === "codex") {
     const last = join(dir, "last", `${tag}.txt`);
     r = await sh(["codex", "exec", "--json", "-C", cwd, "-s", q.edit ? "workspace-write" : "read-only", "--skip-git-repo-check", "-m", MODELS.codex, "-c", 'model_reasoning_effort="medium"',
-      ...(rtk ? ["--dangerously-bypass-hook-trust"] : []), "-o", last, prompt], cwd, full ? env : { ...env, CODEX_HOME: join(HOMES, rtk ? "codex-rtk" : "codex-base") });
+      ...(rtk || hook ? ["--dangerously-bypass-hook-trust"] : []), "-o", last, prompt], cwd, full ? env : { ...env, CODEX_HOME: join(HOMES, hook ? "codex-ctxhook" : rtk ? "codex-rtk" : "codex-base") });
     let input = 0, cached = 0, turns = 0;
     for (const line of r.out.split("\n")) {
       try {
@@ -161,7 +167,7 @@ async function main() {
   // measured run does not pay the cache write the others then read.
   const results = join(dir, "results.jsonl");
   const floor = QUESTIONS[0]!;
-  await Promise.all(hs.flatMap((h) => arms.map(async (arm) => appendFileSync(results, `${JSON.stringify(await runOne(h, arm, floor, 0, dir, true))}\n`))));
+  await Promise.all(hs.flatMap((h) => arms.filter((arm) => arm !== "ctxhook" || h !== "grok").map(async (arm) => appendFileSync(results, `${JSON.stringify(await runOne(h, arm, floor, 0, dir, true))}\n`))));
   // Paired and shuffled: every cell of a repetition runs in a random order,
   // repetitions in sequence, so drift and rate limits hit every arm alike.
   let seed = Number(process.env.BENCH_SEED ?? 1);
@@ -169,7 +175,7 @@ async function main() {
   const jobs: [H, Arm, Q, number][] = [];
   for (let rep = 1; rep <= reps; rep++) {
     const cell: [H, Arm, Q, number][] = [];
-    for (const q of qs) for (const arm of arms) for (const h of hs) if (arm !== "full" || q.id === "floor") cell.push([h, arm, q, rep]);
+    for (const q of qs) for (const arm of arms) for (const h of hs) if ((arm !== "full" || q.id === "floor") && (arm !== "ctxhook" || h !== "grok")) cell.push([h, arm, q, rep]);
     for (let i = cell.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [cell[i], cell[j]] = [cell[j]!, cell[i]!]; }
     jobs.push(...cell);
   }
