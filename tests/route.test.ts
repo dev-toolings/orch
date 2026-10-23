@@ -202,6 +202,8 @@ describe("ledger and integration gate", () => {
     const gate = await laneIntegrate(state!.id);
     expect(gate.integrated).toBe(true);
     expect(gate.report).toContain("STATUS: integrated");
+    // a.txt and b.txt are new files: the stat comes from the patch, not the working tree.
+    expect(gate.report).toContain("2 files changed");
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("a\n");
     expect(listLanes().some((l) => l.id === state!.id)).toBe(false);
     expect(readLedger().find((r) => r.id === state!.id && r.kind === "outcome")).toMatchObject({ outcome: "integrated", by: "integrate" });

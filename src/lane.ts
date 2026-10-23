@@ -811,6 +811,9 @@ export async function laneIntegrate(id: string): Promise<IntegrateResult> {
   else if (protectedBranch(s.repo, branch)) why.push(`caller repo is on ${branch}: integrating into the default branch is the operator's call`);
   if (why.length) return refused(why);
 
+  // The patch's own stat, read before gc drops the branch: a working-tree
+  // diff would miss the files the lane created (untracked once applied).
+  const stat = tail(git(s.repo, "diff", "--stat", s.base, s.branch).out, 12);
   const patch = 'git -C "$1" diff --binary --no-ext-diff --no-textconv "$2" "$3" | git -C "$1" apply';
   const result = await withIntegrateLock(() => {
     const check = spawnSync("sh", ["-c", `${patch} --check`, "lane-integrate", s.repo, s.base, s.branch], { encoding: "utf8" });
@@ -823,7 +826,6 @@ export async function laneIntegrate(id: string): Promise<IntegrateResult> {
   });
   if (result === null) return refused(["another integration held the lock for 60s"]);
   if ("error" in result) return refused([result.error!]);
-  const stat = tail(git(s.repo, "diff", "--stat", "--", ...touched).out, 12);
   return {
     report: `LANE INTEGRATE\nSTATUS: integrated\nID: ${id}\nINTO: ${s.repo} (${branch}, uncommitted)\nAPPLIED:\n${stat || touched.join("\n")}\nGC: ${result.gc || "nothing"}\n`,
     integrated: true,
