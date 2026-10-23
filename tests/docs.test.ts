@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadSources, pruneSources, readMeta, searchDocs, type Source, statusLines, updateSource } from "../src/docs/docs.ts";
+import { dirBytes, loadSources, pruneSources, readMeta, searchDocs, type Source, statusLines, updateSource } from "../src/docs/docs.ts";
 
 let root: string;
 let docs: string;
@@ -83,8 +83,22 @@ describe("docs", () => {
 
   test("status reports fetched and missing sources", () => {
     const lines = statusLines([gitSrc(), { ...llmsSrc(), id: "missing" }], docs);
-    expect(lines[0]).toContain("indexed");
+    expect(lines[0]).toContain("indexed  ");
+    expect(lines[0]).toMatch(/\d+\.\d MB$/);
     expect(lines[1]).toContain("not fetched");
+    expect(lines.at(-1)).toMatch(/^total\s+\d+\.\d MB on disk$/);
+  });
+
+  test("dirBytes counts regular files recursively without following symlinks", () => {
+    const tree = join(root, "bytes-tree");
+    mkdirSync(join(tree, "nested"), { recursive: true });
+    writeFileSync(join(tree, "nested", "data"), Buffer.alloc(13));
+    const external = join(root, "bytes-external");
+    mkdirSync(external);
+    writeFileSync(join(external, "large"), Buffer.alloc(37));
+    symlinkSync(external, join(tree, "linked"), "dir");
+    expect(dirBytes(tree)).toBe(13);
+    expect(dirBytes(join(root, "does-not-exist"))).toBe(0);
   });
 
   test("status lists orphans and pruning removes only marked undeclared directories", () => {
@@ -102,9 +116,13 @@ describe("docs", () => {
     writeFileSync(join(external, ".orch-docs.json"), "{}");
     symlinkSync(external, join(orphanRoot, "external-link"), "dir");
 
-    expect(statusLines([declared], orphanRoot).at(-1)).toBe(
-      `${"retired".padEnd(20)} orphan       not in catalog/docs.yaml (orch docs update removes it)`,
-    );
+    writeFileSync(join(orphanRoot, declared.id, "payload"), Buffer.alloc(1048576));
+    writeFileSync(join(orphanRoot, "retired", "payload"), Buffer.alloc(524288));
+    const lines = statusLines([declared], orphanRoot);
+    expect(lines[0]).toMatch(/indexed|NOT INDEXED/);
+    expect(lines[0]).toMatch(/1\.0 MB$/);
+    expect(lines[1]).toBe(`${"retired".padEnd(20)} orphan       not in catalog/docs.yaml (orch docs update removes it)  0.5 MB`);
+    expect(lines.at(-1)).toBe(`${"total".padEnd(20)} 1.5 MB on disk`);
     expect(pruneSources([declared], orphanRoot)).toEqual(["retired"]);
     expect(existsSync(join(orphanRoot, declared.id))).toBe(true);
     expect(existsSync(join(orphanRoot, "retired"))).toBe(false);

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { laneAuto, laneGc, laneIntegrate, laneReviewLane, laneRun, listLanes } from "../src/lane.ts";
 import { appendLedger, lastVerdict, type LedgerRow, readLedger, type RunRecord } from "../src/lanes/ledger.ts";
-import { declaredFiles, inScope, routeEffort, routeSpec, specFeatures, type SpecFeatures, DEFAULT_ROUTE } from "../src/lanes/route.ts";
+import { declaredFiles, inScope, routeEffort, routeReport, routeSpec, specFeatures, type SpecFeatures, DEFAULT_ROUTE } from "../src/lanes/route.ts";
 import { parseSpec } from "../src/lanes/spec.ts";
 import { loadProfile, type Profile } from "../src/core/profile.ts";
 
@@ -97,6 +97,18 @@ describe("routeSpec", () => {
     expect(r).toMatchObject({ to: "codex", effort: "medium" });
   });
 
+  test("effort: medium is switched off once it fails 25% of 10 MECHANICAL runs", () => {
+    const mech = { ...feat(three), mechanical: true, fingerprint: "new" };
+    const medRun = (id: string, ok: boolean): LedgerRow[] => {
+      const r = run(id, "codex", "complete");
+      return [{ ...r, effort: "medium", features: { ...r.features, mechanical: true } }, { kind: "outcome", id, at: "", outcome: ok ? "integrated" : "dropped", by: "gc" }];
+    };
+    const rows = (ko: number) => Array.from({ length: 10 }, (_, i) => medRun(`m${i}`, i >= ko)).flat();
+    expect(routeEffort(mech, rows(2), "xhigh", DEFAULT_ROUTE).effort).toBe("medium");
+    expect(routeEffort(mech, rows(3), "xhigh", DEFAULT_ROUTE)).toMatchObject({ effort: "xhigh" });
+    expect(routeEffort(mech, rows(3), "xhigh", DEFAULT_ROUTE).why).toContain("medium failed 3/10");
+  });
+
   test("specFeatures reads MECHANICAL and a stable fingerprint", () => {
     const a = specFeatures(parseSpec("OBJECTIVE: do  it\nFILES: b.ts, a.ts\nMECHANICAL: yes"));
     const b = specFeatures(parseSpec("OBJECTIVE: do it\nFILES: a.ts\nb.ts"));
@@ -122,9 +134,41 @@ describe("routeSpec", () => {
     expect(r.to).toBe("codex");
   });
 
+  test("a superseded run (A/B loser) counts neither for nor against its harness", () => {
+    const rows: LedgerRow[] = [...history("codex", 5, 0), run("ab", "codex", "complete"), { kind: "outcome", id: "ab", at: "", outcome: "superseded", by: "gc" }];
+    expect(routeSpec(feat(three), rows, { installed: [...installed] }).stats.find((s) => s.to === "codex")).toMatchObject({ n: 5, ok: 5 });
+  });
+
   test("risk asks for a high review; --to overrides the size rule", () => {
     const r = routeSpec(feat(["src/auth.ts"], ["security"]), [], { installed: [...installed], to: "grok" });
     expect(r).toMatchObject({ action: "lane", to: "grok", review: "high" });
+  });
+});
+
+describe("routeReport NEXT command", () => {
+  test("prints inline, lane, explicit --to, risk and no-harness next steps", () => {
+    const one = feat(["src/a.ts"]);
+    const self = routeSpec(one, [], { installed: ["codex"] });
+    expect(routeReport(self, one, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: do it inline, no lane (pass --to to force one)");
+
+    const features = feat(three);
+    const lane = routeSpec(features, [], { installed: ["codex"] });
+    expect(routeReport(lane, features, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: lane auto --spec spec.md");
+
+    const explicit = routeSpec(features, [], { installed: ["codex", "claude"], to: "claude" });
+    expect(routeReport(explicit, features, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: lane auto --spec spec.md --to claude");
+
+    const riskyFeatures = feat(three, ["security"]);
+    const risky = routeSpec(riskyFeatures, [], { installed: ["codex"] });
+    expect(routeReport(risky, riskyFeatures, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: lane auto --spec spec.md  (risk: lane auto reviews it, the gate needs a recorded ship)");
+
+    const unavailable = routeSpec(features, [], { installed: [] });
+    expect(routeReport(unavailable, features, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: install a lane harness (codex, claude or grok)");
   });
 });
 
@@ -175,6 +219,8 @@ describe("ledger and integration gate", () => {
     const gate = await laneIntegrate(state!.id);
     expect(gate.integrated).toBe(true);
     expect(gate.report).toContain("STATUS: integrated");
+    // a.txt and b.txt are new files: the stat comes from the patch, not the working tree.
+    expect(gate.report).toContain("2 files changed");
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("a\n");
     expect(listLanes().some((l) => l.id === state!.id)).toBe(false);
     expect(readLedger().find((r) => r.id === state!.id && r.kind === "outcome")).toMatchObject({ outcome: "integrated", by: "integrate" });
@@ -211,8 +257,8 @@ describe("ledger and integration gate", () => {
     sh(repo, "git checkout -q feat/x");
     expect((await laneIntegrate(risky.state!.id)).integrated).toBe(true);
 
-    expect(laneGc(out.state!.id)).toContain(`removed ${out.state!.id}`);
-    expect(readLedger().find((r) => r.id === out.state!.id && r.kind === "outcome")).toMatchObject({ outcome: "dropped", by: "gc" });
+    expect(laneGc(out.state!.id, { superseded: true })).toContain(`removed ${out.state!.id}`);
+    expect(readLedger().find((r) => r.id === out.state!.id && r.kind === "outcome")).toMatchObject({ outcome: "superseded", by: "gc" });
   });
 
   test("auto: an inline-sized spec runs nothing; a larger one routes, runs and integrates", async () => {

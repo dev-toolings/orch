@@ -14,10 +14,17 @@ export interface RunResult {
 const ENV_ALLOW = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR", "TZ"];
 
 export function workerEnv(extra: Record<string, string> = {}): Record<string, string> {
+  for (const [k, v] of Object.entries(extra)) {
+    if (!/^LANE_[A-Z0-9_]+$/.test(k)) {
+      throw new Error(`workerEnv: extra key ${k} is not a LANE_* variable`);
+    }
+    if (v.includes("\0")) throw new Error(`workerEnv: value for ${k} contains a NUL byte`);
+  }
+
   const env: Record<string, string> = {};
   for (const k of ENV_ALLOW) if (process.env[k]) env[k] = process.env[k]!;
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith("XDG_") && v) env[k] = v;
-  return { ...env, ORCH_LANE: "1", ...extra };
+  return { ...env, ...extra, ORCH_LANE: "1" };
 }
 
 // Runs argv in its own process group; stdout+stderr go to logPath. On timeout

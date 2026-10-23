@@ -17,8 +17,9 @@ import { fmtUsage, laneReport, reviewReport } from "./lanes/report.ts";
 import { releaseSlot, reserveSlot } from "./lanes/slots.ts";
 import { laneBudget, type MachineFigures } from "./lanes/budget.ts";
 import { EFFORTS, missingFields, parseSpec, type Spec } from "./lanes/spec.ts";
-import { appendLedger, lastVerdict, parseVerdict, readLedger, type Outcome, type Verdict } from "./lanes/ledger.ts";
+import { appendLedger, lastVerdict, parseVerdict, readLedger, summarize, type Outcome, type Verdict } from "./lanes/ledger.ts";
 import { inScope, type Risk, routeReport, routeSpec, specFeatures } from "./lanes/route.ts";
+import { withFileLock } from "./lanes/lock.ts";
 import { statusEntries, workerBase } from "./lanes/worktree.ts";
 
 // The worktree is a bare checkout: no installed dependencies, no gitignored
@@ -671,7 +672,7 @@ function forgetCallerRepoLane(s: LaneState, out: string[]): void {
 }
 
 // One lane record: removed (and its outcome logged) only once nothing is lost.
-function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" | "integrate" = "gc"): boolean {
+function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" | "integrate" = "gc", superseded = false): boolean {
   if (s.status === "running" && alive(s.pid)) {
     out.push(`kept ${s.id} (running)`);
     return false;
@@ -719,7 +720,7 @@ function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" 
     out.push(`kept ${s.id} (branch removal failed)`);
     return false;
   }
-  const outcome: Outcome = !s.changed ? "nochange" : merged || squashed || applied ? "integrated" : "dropped";
+  const outcome: Outcome = !s.changed ? "nochange" : merged || squashed || applied ? "integrated" : superseded && s.id === drop ? "superseded" : "dropped";
   rmSync(join(stateDir(), "lanes", s.id), { recursive: true, force: true });
   appendLedger({ kind: "outcome", id: s.id, at: new Date().toISOString(), outcome, by });
   out.push(`removed ${s.id}${applied ? " (applied)" : ""}`);
@@ -728,7 +729,7 @@ function gcLane(s: LaneState, drop: string | undefined, out: string[], by: "gc" 
 
 // Removes only what a lane created, and only once nothing is lost: the branch
 // is integrated, its patch reverses cleanly from the repo tree, or it produced no change.
-export function laneGc(drop?: string): string[] {
+export function laneGc(drop?: string, opts: { superseded?: boolean } = {}): string[] {
   const out: string[] = [];
   // Pinned grok copies of older versions (about 300 MB each): keep the current one only.
   const binDir = join(stateDir(), "bin");
@@ -741,7 +742,7 @@ export function laneGc(drop?: string): string[] {
       }
     }
   }
-  for (const s of listLanes()) gcLane(s, drop, out);
+  for (const s of listLanes()) gcLane(s, drop, out, "gc", opts.superseded);
   for (const o of listOrphans()) gcOrphan(o, drop, out);
   return out;
 }
@@ -754,26 +755,9 @@ function protectedBranch(repo: string, branch: string): boolean {
   return remote.ok && remote.out.replace(/^origin\//, "") === branch;
 }
 
-// Integrations apply to one shared working tree: one at a time. The lock is a
-// directory (atomic mkdir) holding its owner's pid; a dead owner's is taken over.
-async function withIntegrateLock<T>(fn: () => T): Promise<T | null> {
-  const lock = join(stateDir(), "integrate.lock");
-  mkdirSync(stateDir(), { recursive: true });
-  const until = Date.now() + 60_000;
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      writeFileSync(join(lock, "pid"), String(process.pid));
-      break;
-    } catch {
-      const owner = Number(existsSync(join(lock, "pid")) ? readFileSync(join(lock, "pid"), "utf8") : 0);
-      if (owner && !alive(owner)) { rmSync(lock, { recursive: true, force: true }); continue; }
-      if (Date.now() > until) return null;
-      await Bun.sleep(200);
-    }
-  }
-  try { return fn(); } finally { rmSync(lock, { recursive: true, force: true }); }
-}
+// Integrations apply to one shared working tree: one at a time, under a
+// kernel lock (src/lanes/lock.ts) that dies with its holder.
+const withIntegrateLock = <T>(fn: () => T) => withFileLock(join(stateDir(), "integrate.lck"), fn);
 
 export interface IntegrateResult { report: string; integrated: boolean }
 
@@ -811,6 +795,9 @@ export async function laneIntegrate(id: string): Promise<IntegrateResult> {
   else if (protectedBranch(s.repo, branch)) why.push(`caller repo is on ${branch}: integrating into the default branch is the operator's call`);
   if (why.length) return refused(why);
 
+  // The patch's own stat, read before gc drops the branch: a working-tree
+  // diff would miss the files the lane created (untracked once applied).
+  const stat = tail(git(s.repo, "diff", "--stat", s.base, s.branch).out, 12);
   const patch = 'git -C "$1" diff --binary --no-ext-diff --no-textconv "$2" "$3" | git -C "$1" apply';
   const result = await withIntegrateLock(() => {
     const check = spawnSync("sh", ["-c", `${patch} --check`, "lane-integrate", s.repo, s.base, s.branch], { encoding: "utf8" });
@@ -823,7 +810,6 @@ export async function laneIntegrate(id: string): Promise<IntegrateResult> {
   });
   if (result === null) return refused(["another integration held the lock for 60s"]);
   if ("error" in result) return refused([result.error!]);
-  const stat = tail(git(s.repo, "diff", "--stat", "--", ...touched).out, 12);
   return {
     report: `LANE INTEGRATE\nSTATUS: integrated\nID: ${id}\nINTO: ${s.repo} (${branch}, uncommitted)\nAPPLIED:\n${stat || touched.join("\n")}\nGC: ${result.gc || "nothing"}\n`,
     integrated: true,
@@ -863,7 +849,7 @@ export function laneRoute(opts: { specPath: string; profile: Profile; to?: Harne
   const features = specFeatures(spec);
   const efforts = Object.fromEntries(HARNESSES.map((h) => [h, opts.profile.lanes[h]?.effort]));
   const route = routeSpec(features, readLedger(), { installed: opts.installed ?? installedLaneHarnesses(), config: opts.profile.route, to: opts.to, efforts });
-  return { spec, features, route, report: routeReport(route, features) };
+  return { spec, features, route, report: routeReport(route, features, opts.specPath) };
 }
 
 // route, run, gate: one spec end to end. It stops at the first step that
@@ -895,7 +881,7 @@ async function main() {
     args: rest,
     allowPositionals: true,
     options: {
-      model: { type: "string" }, lane: { type: "string" },
+      model: { type: "string" }, lane: { type: "string" }, superseded: { type: "boolean" },
       to: { type: "string" }, spec: { type: "string" }, effort: { type: "string" }, profile: { type: "string" },
       repo: { type: "string" }, channel: { type: "string" }, base: { type: "string" }, goal: { type: "string" },
       from: { type: "string" }, drop: { type: "string" }, risk: { type: "string" }, file: { type: "string" },
@@ -950,10 +936,17 @@ async function main() {
     for (const o of listOrphans()) {
       console.log(`${o.id}  orphan  ${o.repo ?? (o.worktree ? "repo unknown" : "no worktree")}  ${o.dirty === null ? "status unknown" : `${o.dirty} uncommitted`}`);
     }
+  } else if (cmd === "stats") {
+    const summaries = summarize(readLedger());
+    if (!summaries.length) console.log("no lane recorded yet");
+    for (const summary of summaries) {
+      console.log(`${summary.to.padEnd(7)} runs ${summary.runs}  integrated ${summary.integrated}  failed ${summary.failed}  tokens ~${summary.meanTokens ?? "-"}  duration ${summary.meanDurationS ?? "-"}s  gate refusals ${summary.gateRefusals}`);
+    }
   } else if (cmd === "gc") {
-    for (const line of laneGc(values.drop)) console.log(line);
+    if (values.superseded && !values.drop) throw new Error("usage: lane gc [--drop <id> [--superseded]]");
+    for (const line of laneGc(values.drop, { superseded: values.superseded })) console.log(line);
   } else {
-    console.log("usage: lane run|route|auto|integrate|review|ask|budget|status|gc");
+    console.log("usage: lane run|route|auto|integrate|review|ask|budget|status|stats|gc");
     process.exitCode = 2;
   }
 }

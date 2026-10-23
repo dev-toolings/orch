@@ -24,7 +24,9 @@ own file-based memory (`orch mem`). No external memory system or launcher.
   reliable, the cheapest harness per integrated lane. `lane integrate` is the
   gate: VERIFY passed, every touched file in FILES, a recorded `ship` review
   for a risky spec (`lane review --lane <id>`), a feature branch; else nothing
-  moves and the refusal is logged.
+  moves and the refusal is logged. Integrations run one at a time under a
+  kernel `flock` (`src/lanes/lock.ts`, through `bun:ffi`), released when its
+  holder dies: no stale lock exists, so there is no takeover protocol.
 - `src/orch.ts` installs only what `src/install/render.ts` lists and records it in a
   manifest; it renders targets only for detected harnesses. Uninstall removes
   exactly that and keeps edited files.
