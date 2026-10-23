@@ -94,7 +94,10 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   if (q.edit) cwd = await editCopy(q, tag, dir, useCtx || arm === "ctxhook");
   const body = q.edit ? EDIT_FRAME + readFileSync(join(SPECS, q.edit.spec), "utf8") : FRAME + q.text;
   const full = arm === "full";
-  const prompt = body + (useCtx && q.id !== "floor" ? CTX_HINT : "") + (rtk && h === "grok" && q.id !== "floor" ? RTK_HINT : "");
+  // A per-run nonce first: identical prompts would otherwise share a prompt cache
+  // across runs that real, distinct sessions never get (the system prefix still caches).
+  const nonce = process.env.BENCH_NONCE === "0" ? "" : `Run ${tag}-${Math.random().toString(36).slice(2, 8)}.\n`;
+  const prompt = nonce + body + (useCtx && q.id !== "floor" ? CTX_HINT : "") + (rtk && h === "grok" && q.id !== "floor" ? RTK_HINT : "");
   let r: Awaited<ReturnType<typeof sh>>;
   const row = { h, arm, q: q.id, rep, warm, ok: false, verify: null as boolean | null, gold: null as string | null, outScope: [] as string[], session: null as string | null, score: 0, max: q.facts.length, uncached: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0,
     turns: null as number | null, usd: null as number | null, secs: 0, rtkCmds: null as number | null, answer: "" };
@@ -104,7 +107,7 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
     try {
       const j = JSON.parse(r.out); const u = j.usage ?? {};
       Object.assign(row, { answer: j.result ?? "", uncached: u.input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0,
-        output: u.output_tokens ?? 0, turns: j.num_turns ?? null, usd: j.total_cost_usd ?? null, ok: r.code === 0 && !j.is_error });
+        output: u.output_tokens ?? 0, turns: j.num_turns ?? null, usd: j.total_cost_usd ?? null, session: j.session_id ?? null, ok: r.code === 0 && !j.is_error });
     } catch {}
   } else if (h === "codex") {
     const last = join(dir, "last", `${tag}.txt`);

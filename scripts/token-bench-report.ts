@@ -18,6 +18,10 @@ const rows: Row[] = process.argv.slice(2).flatMap((d) => readFileSync(join(d, "r
   .map((r) => (r.verify == null && facts.get(r.q)?.length ? { ...r, score: facts.get(r.q)!.filter((re) => re.test(r.answer ?? "")).length } : r));
 // Input-equivalent tokens: cache writes cost about 1.25x input, cache reads about 0.1x (Anthropic and OpenAI list prices).
 const eq = (r: Row) => r.uncached + 1.25 * r.cacheWrite + 0.1 * r.cacheRead;
+// Raw input volume: every input token the model processed, whatever the cache
+// state. Repeated identical prompts hit a cache that real sessions never share,
+// so the weighted figure flatters whichever arm repeats itself; this one does not.
+const raw = (r: Row) => r.uncached + r.cacheWrite + r.cacheRead;
 const med = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); const n = s.length; return n ? (n % 2 ? s[(n - 1) / 2]! : (s[n / 2 - 1]! + s[n / 2]!) / 2) : NaN; };
 const k = (n: number) => (Number.isNaN(n) ? "-" : n >= 10_000 ? `${(n / 1000).toFixed(0)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n.toFixed(0));
 let seed = 42;
@@ -35,14 +39,14 @@ const groups = new Map<string, Row[]>();
 for (const r of rows) { const key = `${r.h}|${r.arm}|${r.q === "floor" ? "floor" : r.q.startsWith("e") ? "edit" : "qa"}`; groups.set(key, [...(groups.get(key) ?? []), r]); }
 const base = new Map(rows.filter((r) => r.arm === "base").map((r) => [`${r.h}|${r.q}|${r.rep}`, r]));
 
-console.log("| harness | kind | arm | n | quality | eq. input (med) | output (med) | turns (med) | secs (med) | USD (mean) | eq. input vs base | output vs base | rtk cmds |");
-console.log("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|---:|");
+console.log("| harness | kind | arm | n | quality | raw input vs base | eq. input (med) | output (med) | turns (med) | secs (med) | USD (mean) | eq. input vs base | output vs base | rtk cmds |");
+console.log("|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|---|---:|");
 for (const [key, rs] of [...groups].sort()) {
   const [h, arm, kind] = key.split("|");
   const quality = kind === "floor" ? "-" : `${((100 * rs.reduce((a, r) => a + r.score, 0)) / rs.reduce((a, r) => a + r.max, 0)).toFixed(0)}%`;
   const pairs = rs.map((r) => [r, base.get(`${r.h}|${r.q}|${r.rep}`)] as const).filter(([r, b]) => b && arm !== "base" && eq(b) > 0 && eq(r) > 0);
   const usd = rs.filter((r) => r.usd != null);
-  console.log(`| ${h} | ${kind} | ${arm} | ${rs.length} | ${quality} | ${k(med(rs.map(eq)))} | ${k(med(rs.map((r) => r.output)))} | ${med(rs.map((r) => r.turns ?? NaN).filter((x) => !Number.isNaN(x))) || "-"} | ${med(rs.map((r) => r.secs)).toFixed(0)} | ${usd.length ? (usd.reduce((a, r) => a + r.usd!, 0) / usd.length).toFixed(3) : "-"} | ${ratioCI(pairs.map(([r, b]) => eq(r) / eq(b!)))} | ${ratioCI(pairs.map(([r, b]) => (r.output || 1) / (b!.output || 1)))} | ${rs.some((r) => r.rtkCmds != null) ? (rs.reduce((a, r) => a + (r.rtkCmds ?? 0), 0) / rs.length).toFixed(1) : "-"} |`);
+  console.log(`| ${h} | ${kind} | ${arm} | ${rs.length} | ${quality} | ${ratioCI(pairs.map(([r, b]) => raw(r) / raw(b!)))} | ${k(med(rs.map(eq)))} | ${k(med(rs.map((r) => r.output)))} | ${med(rs.map((r) => r.turns ?? NaN).filter((x) => !Number.isNaN(x))) || "-"} | ${med(rs.map((r) => r.secs)).toFixed(0)} | ${usd.length ? (usd.reduce((a, r) => a + r.usd!, 0) / usd.length).toFixed(3) : "-"} | ${ratioCI(pairs.map(([r, b]) => eq(r) / eq(b!)))} | ${ratioCI(pairs.map(([r, b]) => (r.output || 1) / (b!.output || 1)))} | ${rs.some((r) => r.rtkCmds != null) ? (rs.reduce((a, r) => a + (r.rtkCmds ?? 0), 0) / rs.length).toFixed(1) : "-"} |`);
 }
 
 const failed = rows.filter((r) => !r.ok);
