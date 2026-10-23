@@ -11,12 +11,13 @@
 // codex-rtk with rtk's hooks.json) under BENCH_HOMES, plus
 // claude-rtk-settings.json (rtk's PreToolUse hook). The ctxhook arm (Claude and
 // Codex only) needs claude-ctxhook-settings.json and a codex-ctxhook CODEX_HOME
-// whose hooks.json runs `ctx hook rewrite --harness <h>`. BENCH_CTX_BIN puts a
+// whose hooks.json runs `ctx hook rewrite --harness <h>`; each codex-<arm> dir is moved
+// to a neutral name on first use (codexHome). BENCH_CTX_BIN puts a
 // ctx build first on PATH in every arm.
 // Usage: bun scripts/token-bench.ts [outDir]
 // Env: BENCH_H=claude,codex,grok BENCH_ARMS=base,ctx,rtk,ctxrtk,full BENCH_Q=o1,c1 (e2,e3: edit tasks)
 //      BENCH_REPS=5 BENCH_PAR=6 BENCH_SEED=1 BENCH_SPECS=<dir with the edit specs>
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const REPOS = process.env.BENCH_REPOS ?? "/tmp/tokbench/repos";
@@ -74,6 +75,16 @@ async function sh(cmd: string[], cwd: string, env: Record<string, string>, timeo
 }
 
 // A writable copy at the spec's base commit, provisioned like a lane worktree.
+// Codex shows its home's real path to the model (skills listing), so the directory a
+// run uses must not name the arm: `codex-<arm>` from the setup is moved, once, to a
+// neutral name derived from it (2026-10-23: the model saw `codex-ctxhook`).
+function codexHome(arm: string): string {
+  const neutral = join(HOMES, `codex-${Bun.hash(`bench-home-${arm}`).toString(36).slice(0, 8)}`);
+  const named = join(HOMES, `codex-${arm}`);
+  if (!existsSync(neutral) && existsSync(named)) renameSync(named, neutral);
+  return neutral;
+}
+
 async function editCopy(q: Q, tag: string, dir: string, useCtx: boolean): Promise<string> {
   // The path is in the model's view: name it by a hash, never by the arm.
   const wt = join(dir, "wt", Bun.hash(tag).toString(36));
@@ -122,7 +133,7 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   } else if (h === "codex") {
     const last = join(dir, "last", `${tag}.txt`);
     r = await sh(["codex", "exec", "--json", "-C", cwd, "-s", q.edit ? "workspace-write" : "read-only", "--skip-git-repo-check", "-m", MODELS.codex, "-c", 'model_reasoning_effort="medium"',
-      ...(rtk || hook ? ["--dangerously-bypass-hook-trust"] : []), "-o", last, prompt], cwd, full ? env : { ...env, CODEX_HOME: join(HOMES, hook ? `codex-${arm}` : rtk ? "codex-rtk" : "codex-base") });
+      ...(rtk || hook ? ["--dangerously-bypass-hook-trust"] : []), "-o", last, prompt], cwd, full ? env : { ...env, CODEX_HOME: codexHome(hook ? arm : rtk ? "rtk" : "base") });
     let input = 0, cached = 0, turns = 0;
     for (const line of r.out.split("\n")) {
       try {
