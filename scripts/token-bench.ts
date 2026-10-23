@@ -27,7 +27,7 @@ const RTK_BIN = process.env.BENCH_RTK_BIN ?? "/tmp/tokbench/rtkbin";
 const MODELS = { claude: "sonnet", codex: "gpt-6-luna", grok: "grok-4.7-build-fast" } as const;
 type H = keyof typeof MODELS;
 // full: the operator's real config (MCP servers, skills, CODEX_HOME), floor only.
-const ARMS = ["base", "ctx", "rtk", "ctxrtk", "ctxhook", "ctxhook0", "ctxhookn", "full"] as const;
+const ARMS = ["base", "ctx", "rtk", "ctxrtk", "ctxhook", "ctxhook0", "ctxhook300", "ctxhookn", "full"] as const;
 const CTX_BIN = process.env.BENCH_CTX_BIN;
 type Arm = (typeof ARMS)[number];
 
@@ -107,10 +107,13 @@ async function runOne(h: H, arm: Arm, q: Q, rep: number, dir: string, warm = fal
   const useCtx = arm === "ctx" || arm === "ctxrtk";
   const rtkData = join(dir, "rtk", tag);
   // ctxhook0: the same hooks with no appended source (homes claude-ctxhook0-settings.json, codex-ctxhook0).
+  // ctxhook300 (Claude): the ctxhook hooks with a 300-token source budget
+  // (claude-ctxhook300-settings.json). 2026-10-23, one lot: Claude QA cost -7% [-11,-4]
+  // against -1% for 600, edit alike; not yet enough to change the default.
   // ctxhookn (Claude): the ctxhook hooks plus a SessionStart note asking to batch
   // independent tool calls (claude-ctxhookn-settings.json). Rejected on 2026-10-23:
   // Claude edit +18% raw input, +22% cost over 12 pairs.
-  const hook = arm === "ctxhook" || arm === "ctxhook0" || arm === "ctxhookn";
+  const hook = arm === "ctxhook" || arm === "ctxhook0" || arm === "ctxhook300" || arm === "ctxhookn";
   const path0 = CTX_BIN ? `${CTX_BIN}:${env0.PATH}` : env0.PATH!;
   const env = { ...env0, RTK_BENCH_DATA: rtkData, PATH: rtk ? `${RTK_BIN}:${path0}` : path0 };
   if (q.edit) cwd = await editCopy(q, tag, dir, useCtx || hook);
