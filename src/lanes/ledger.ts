@@ -26,7 +26,9 @@ export interface RunRecord {
   usage: Usage;
 }
 
-export type Outcome = "integrated" | "dropped" | "nochange";
+// superseded: dropped because another lane for the same spec was kept (an
+// A/B, a retry): it says nothing about the worker, so routing ignores it.
+export type Outcome = "integrated" | "dropped" | "nochange" | "superseded";
 
 export interface OutcomeRecord {
   kind: "outcome";
@@ -46,6 +48,16 @@ export type Verdict = "ship" | "fix-first" | "rethink" | "unknown";
 
 export type LedgerRow = RunRecord | OutcomeRecord | GateRecord | ReviewRecord;
 const KINDS = new Set(["run", "outcome", "gate", "review"]);
+
+export interface HarnessSummary {
+  to: string;
+  runs: number;
+  integrated: number;
+  failed: number;
+  meanTokens?: number;
+  meanDurationS?: number;
+  gateRefusals: number;
+}
 
 export const ledgerPath = (root = stateDir()) => join(root, "lanes.jsonl");
 
@@ -78,9 +90,55 @@ export function verdicts(rows: LedgerRow[]): { run: RunRecord; ok: boolean }[] {
     if (r.kind !== "run") return [];
     const o = outcome.get(r.id);
     if (o === "integrated") return [{ run: r, ok: true }];
+    if (o === "superseded") return [];
     if (o === "dropped" || ["failed", "refused", "timeout"].includes(r.status)) return [{ run: r, ok: false }];
     return [];
   });
+}
+
+export function summarize(rows: LedgerRow[]): HarnessSummary[] {
+  const runsByHarness = new Map<string, RunRecord[]>();
+  for (const row of rows) {
+    if (row.kind !== "run") continue;
+    const runs = runsByHarness.get(row.to) ?? [];
+    runs.push(row);
+    runsByHarness.set(row.to, runs);
+  }
+
+  const verdictCounts = new Map<string, { integrated: number; failed: number }>();
+  for (const verdict of verdicts(rows)) {
+    const counts = verdictCounts.get(verdict.run.to) ?? { integrated: 0, failed: 0 };
+    if (verdict.ok) counts.integrated++;
+    else counts.failed++;
+    verdictCounts.set(verdict.run.to, counts);
+  }
+
+  return [...runsByHarness.entries()]
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([to, runs]) => {
+      const ids = new Set(runs.map((run) => run.id));
+      const tokens = runs.flatMap((run) => {
+        const usage = run.usage;
+        if (typeof usage?.total === "number" && Number.isFinite(usage.total)) return [usage.total];
+        if (typeof usage?.input === "number" && Number.isFinite(usage.input)
+          && typeof usage.output === "number" && Number.isFinite(usage.output)) {
+          return [usage.input + usage.output];
+        }
+        return [];
+      });
+      const durations = runs.flatMap((run) => Number.isFinite(run.durationS) ? [run.durationS] : []);
+      const counts = verdictCounts.get(to) ?? { integrated: 0, failed: 0 };
+      const gateRefusals = rows.filter((row) => row.kind === "gate" && ids.has(row.id)).length;
+      return {
+        to,
+        runs: runs.length,
+        integrated: counts.integrated,
+        failed: counts.failed,
+        ...(tokens.length ? { meanTokens: Math.round(tokens.reduce((sum, value) => sum + value, 0) / tokens.length) } : {}),
+        ...(durations.length ? { meanDurationS: Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) } : {}),
+        gateRefusals,
+      };
+    });
 }
 
 // The last review of a lane decides: a later fix-first overrides an earlier ship.

@@ -146,6 +146,14 @@ export function routeEffort(f: SpecFeatures, rows: LedgerRow[], profileEffort: s
   const failedBefore = f.fingerprint && verdicts(rows).some((v) => !v.ok && v.run.features?.fingerprint === f.fingerprint);
   if (failedBefore) return { effort: atLeastHigh, why: `this spec already failed once: effort ${atLeastHigh} at least` };
   const codeStacks = f.stacks.filter((s) => !SUPPORT_STACKS.has(s));
+  // Medium pays only while it rarely fails: a failure costs the medium run
+  // plus the escalated retry. Measured on 2026-10-23: medium -25% tokens,
+  // -52% time, 1 failure in 3. Break-even is a 25% failure rate.
+  const medium = verdicts(rows).filter((v) => v.run.features?.mechanical && v.run.effort === "medium");
+  const mediumFails = medium.filter((v) => !v.ok).length;
+  if (f.mechanical && medium.length >= cfg.min_samples * 2 && mediumFails / medium.length >= 0.25) {
+    return { effort: profileEffort, why: `medium failed ${mediumFails}/${medium.length} MECHANICAL runs (>= 25%): profile effort ${profileEffort ?? "default"}` };
+  }
   if (f.mechanical && f.files.length <= cfg.medium_max_files && codeStacks.length <= 1) {
     const effort = profileEffort && rank(profileEffort) < rank("medium") ? profileEffort : "medium";
     return { effort, why: `MECHANICAL, no risk, ${f.files.length} file(s), ${codeStacks.length || "no"} code stack: effort ${effort}` };
@@ -211,7 +219,12 @@ function pickHarness(features: SpecFeatures, rows: LedgerRow[], opts: { installe
   return { action: "lane", to: pick, review, reasons, stats };
 }
 
-export function routeReport(r: Route, features: SpecFeatures): string {
+export function routeReport(r: Route, features: SpecFeatures, specPath?: string): string {
+  const next = r.action === "self"
+    ? "NEXT: do it inline, no lane (pass --to to force one)"
+    : !r.to
+      ? "NEXT: install a lane harness (codex, claude or grok)"
+      : `NEXT: lane auto --spec ${specPath ?? "<spec>"}${r.reasons[0]?.startsWith("--to ") ? ` --to ${r.to}` : ""}${r.review === "high" ? "  (risk: lane auto reviews it, the gate needs a recorded ship)" : ""}`;
   return [
     "LANE ROUTE",
     `ACTION: ${r.action}${r.to ? ` --to ${r.to}` : ""}${r.effort ? ` --effort ${r.effort}` : ""}`,
@@ -219,5 +232,6 @@ export function routeReport(r: Route, features: SpecFeatures): string {
     `FILES: ${features.files.length} (${features.stacks.join(", ") || "no stack"})${features.risk.length ? `; risk ${features.risk.join(", ")}` : ""}`,
     ...r.reasons.map((x) => `WHY: ${x}`),
     r.stats.length ? `RECORD: ${r.stats.map((s) => `${s.to} ${s.ok}/${s.n}${s.tokens ? ` ~${s.tokens} tok` : ""}`).join(", ")}` : "",
+    next,
   ].filter(Boolean).join("\n") + "\n";
 }
