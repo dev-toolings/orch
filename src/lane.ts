@@ -19,6 +19,7 @@ import { laneBudget, type MachineFigures } from "./lanes/budget.ts";
 import { EFFORTS, missingFields, parseSpec, type Spec } from "./lanes/spec.ts";
 import { appendLedger, lastVerdict, parseVerdict, readLedger, summarize, type Outcome, type Verdict } from "./lanes/ledger.ts";
 import { inScope, type Risk, routeReport, routeSpec, specFeatures } from "./lanes/route.ts";
+import { withFileLock } from "./lanes/lock.ts";
 import { statusEntries, workerBase } from "./lanes/worktree.ts";
 
 // The worktree is a bare checkout: no installed dependencies, no gitignored
@@ -754,26 +755,9 @@ function protectedBranch(repo: string, branch: string): boolean {
   return remote.ok && remote.out.replace(/^origin\//, "") === branch;
 }
 
-// Integrations apply to one shared working tree: one at a time. The lock is a
-// directory (atomic mkdir) holding its owner's pid; a dead owner's is taken over.
-async function withIntegrateLock<T>(fn: () => T): Promise<T | null> {
-  const lock = join(stateDir(), "integrate.lock");
-  mkdirSync(stateDir(), { recursive: true });
-  const until = Date.now() + 60_000;
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      writeFileSync(join(lock, "pid"), String(process.pid));
-      break;
-    } catch {
-      const owner = Number(existsSync(join(lock, "pid")) ? readFileSync(join(lock, "pid"), "utf8") : 0);
-      if (owner && !alive(owner)) { rmSync(lock, { recursive: true, force: true }); continue; }
-      if (Date.now() > until) return null;
-      await Bun.sleep(200);
-    }
-  }
-  try { return fn(); } finally { rmSync(lock, { recursive: true, force: true }); }
-}
+// Integrations apply to one shared working tree: one at a time, under a
+// kernel lock (src/lanes/lock.ts) that dies with its holder.
+const withIntegrateLock = <T>(fn: () => T) => withFileLock(join(stateDir(), "integrate.lck"), fn);
 
 export interface IntegrateResult { report: string; integrated: boolean }
 
