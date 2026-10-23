@@ -48,6 +48,11 @@ own file-based memory (`orch mem`). No external memory system or launcher.
 - `scripts/mem-bench.ts` is a billable memory benchmark (20 private facts, 4
   corrected, orch mem against an empty store, in Claude, Codex and Grok):
   run it only on the operator's request.
+- `scripts/token-bench.ts` is a billable token benchmark (code questions and
+  edit tasks in Claude, Codex and Grok; arms base, ctx, a shell-output filter,
+  both, and the operator's full config): run it only on the operator's
+  request. `scripts/token-bench-report.ts` reads its results with no model
+  call (paired ratios against base, 90% bootstrap interval).
 - `src/mem/similar.ts` backs `orch mem review`: close active notes, checked
   after the fact (lexical, no model; the lead judges). A check at write time
   was benched on 2026-10-21: no gain, more tokens. `tests/fixtures/mem-dedup`
