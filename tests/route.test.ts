@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { laneAuto, laneGc, laneIntegrate, laneReviewLane, laneRun, listLanes } from "../src/lane.ts";
 import { appendLedger, lastVerdict, type LedgerRow, readLedger, type RunRecord } from "../src/lanes/ledger.ts";
-import { declaredFiles, inScope, routeEffort, routeSpec, specFeatures, type SpecFeatures, DEFAULT_ROUTE } from "../src/lanes/route.ts";
+import { declaredFiles, inScope, routeEffort, routeReport, routeSpec, specFeatures, type SpecFeatures, DEFAULT_ROUTE } from "../src/lanes/route.ts";
 import { parseSpec } from "../src/lanes/spec.ts";
 import { loadProfile, type Profile } from "../src/core/profile.ts";
 
@@ -125,6 +125,33 @@ describe("routeSpec", () => {
   test("risk asks for a high review; --to overrides the size rule", () => {
     const r = routeSpec(feat(["src/auth.ts"], ["security"]), [], { installed: [...installed], to: "grok" });
     expect(r).toMatchObject({ action: "lane", to: "grok", review: "high" });
+  });
+});
+
+describe("routeReport NEXT command", () => {
+  test("prints inline, lane, explicit --to, risk and no-harness next steps", () => {
+    const one = feat(["src/a.ts"]);
+    const self = routeSpec(one, [], { installed: ["codex"] });
+    expect(routeReport(self, one, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: do it inline, no lane (pass --to to force one)");
+
+    const features = feat(three);
+    const lane = routeSpec(features, [], { installed: ["codex"] });
+    expect(routeReport(lane, features, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: lane auto --spec spec.md");
+
+    const explicit = routeSpec(features, [], { installed: ["codex", "claude"], to: "claude" });
+    expect(routeReport(explicit, features, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: lane auto --spec spec.md --to claude");
+
+    const riskyFeatures = feat(three, ["security"]);
+    const risky = routeSpec(riskyFeatures, [], { installed: ["codex"] });
+    expect(routeReport(risky, riskyFeatures, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: lane auto --spec spec.md  (risk: lane auto reviews it, the gate needs a recorded ship)");
+
+    const unavailable = routeSpec(features, [], { installed: [] });
+    expect(routeReport(unavailable, features, "spec.md").trimEnd().split("\n").at(-1))
+      .toBe("NEXT: install a lane harness (codex, claude or grok)");
   });
 });
 

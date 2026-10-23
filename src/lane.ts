@@ -863,7 +863,7 @@ export function laneRoute(opts: { specPath: string; profile: Profile; to?: Harne
   const features = specFeatures(spec);
   const efforts = Object.fromEntries(HARNESSES.map((h) => [h, opts.profile.lanes[h]?.effort]));
   const route = routeSpec(features, readLedger(), { installed: opts.installed ?? installedLaneHarnesses(), config: opts.profile.route, to: opts.to, efforts });
-  return { spec, features, route, report: routeReport(route, features) };
+  return { spec, features, route, report: routeReport(route, features, opts.specPath) };
 }
 
 // route, run, gate: one spec end to end. It stops at the first step that

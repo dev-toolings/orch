@@ -211,7 +211,12 @@ function pickHarness(features: SpecFeatures, rows: LedgerRow[], opts: { installe
   return { action: "lane", to: pick, review, reasons, stats };
 }
 
-export function routeReport(r: Route, features: SpecFeatures): string {
+export function routeReport(r: Route, features: SpecFeatures, specPath?: string): string {
+  const next = r.action === "self"
+    ? "NEXT: do it inline, no lane (pass --to to force one)"
+    : !r.to
+      ? "NEXT: install a lane harness (codex, claude or grok)"
+      : `NEXT: lane auto --spec ${specPath ?? "<spec>"}${r.reasons[0]?.startsWith("--to ") ? ` --to ${r.to}` : ""}${r.review === "high" ? "  (risk: lane auto reviews it, the gate needs a recorded ship)" : ""}`;
   return [
     "LANE ROUTE",
     `ACTION: ${r.action}${r.to ? ` --to ${r.to}` : ""}${r.effort ? ` --effort ${r.effort}` : ""}`,
@@ -219,5 +224,6 @@ export function routeReport(r: Route, features: SpecFeatures): string {
     `FILES: ${features.files.length} (${features.stacks.join(", ") || "no stack"})${features.risk.length ? `; risk ${features.risk.join(", ")}` : ""}`,
     ...r.reasons.map((x) => `WHY: ${x}`),
     r.stats.length ? `RECORD: ${r.stats.map((s) => `${s.to} ${s.ok}/${s.n}${s.tokens ? ` ~${s.tokens} tok` : ""}`).join(", ")}` : "",
+    next,
   ].filter(Boolean).join("\n") + "\n";
 }
