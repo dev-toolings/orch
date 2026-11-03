@@ -1,0 +1,6 @@
+OBJECTIVE: add a one-line note that the types contract is owned by this repo
+FILES: CONTRACT.md
+INTERFACES: none
+CONSTRAINTS: create only CONTRACT.md
+VERIFY: test -f CONTRACT.md
+ACCEPT: CONTRACT.md exists

@@ -1,0 +1,212 @@
+{
+  "version": "native-parity-1",
+  "closedAt": "2026-11-03",
+  "status": "parity met on this corpus",
+  "runs": {
+    "onePair": "65d68374-d439-44c4-9ef4-c291b8e24327",
+    "twoPairs": "dd2f6d2e-6c59-4ed2-83d7-ec5ec2bde588"
+  },
+  "baseline": "native-parity-1",
+  "model": "claude-opus-5-5",
+  "claudeCode": "2.1.317",
+  "hindsight": "1.1.0-slim",
+  "means_two_pairs": [
+    {
+      "arm": "kiba-mem-off",
+      "cost": 0.2833385,
+      "seconds": 69.115,
+      "outputTokens": 6192.5,
+      "quality": 1
+    },
+    {
+      "arm": "kiba-mem-on",
+      "cost": 0.25506447,
+      "seconds": 61.829499999999996,
+      "outputTokens": 4770.5,
+      "quality": 1
+    },
+    {
+      "arm": "plain",
+      "cost": 0.25785020000000003,
+      "seconds": 74.402,
+      "outputTokens": 5437,
+      "quality": 1
+    }
+  ],
+  "verdict": "Native Kiba with memory: same quality, cost at parity (Hindsight included), 17 percent shorter response than plain Claude Code on the two-pair run; memory off within the output-length noise. Nine cases, one CSV task: no universal guarantee.",
+  "cases": {
+    "onePair": [
+      {
+        "tag": "1-plain",
+        "arm": "plain",
+        "cost": 0.41610179999999997,
+        "cliUsd": 0.41610179999999997,
+        "hindsightUsd": 0,
+        "seconds": 71.613,
+        "nativeMs": 62557,
+        "outputTokens": 6674,
+        "cacheReadInputTokens": 212909,
+        "hookContextBytes": {},
+        "hindsightTokens": null,
+        "verifiedRevisions": 3
+      },
+      {
+        "tag": "1-kiba-mem-off",
+        "arm": "kiba-mem-off",
+        "cost": 0.356734,
+        "cliUsd": 0.356734,
+        "hindsightUsd": 0,
+        "seconds": 57.444,
+        "nativeMs": 48393,
+        "outputTokens": 4708,
+        "cacheReadInputTokens": 182710,
+        "hookContextBytes": {
+          "session-start": 4587,
+          "prompt-submit": 0
+        },
+        "hindsightTokens": null,
+        "verifiedRevisions": 3
+      },
+      {
+        "tag": "1-kiba-mem-on",
+        "arm": "kiba-mem-on",
+        "cost": 0.28182152,
+        "cliUsd": 0.274517,
+        "hindsightUsd": 0.00730452,
+        "seconds": 74.811,
+        "nativeMs": 65758,
+        "outputTokens": 5014,
+        "cacheReadInputTokens": 224665,
+        "hookContextBytes": {
+          "session-start": 4587,
+          "prompt-submit": 1969
+        },
+        "hindsightTokens": {
+          "llm_calls": 6,
+          "llm_input": 31207,
+          "llm_cached": 21810,
+          "llm_output": 12134,
+          "embed_calls": 14,
+          "embed_tokens": 3986
+        },
+        "verifiedRevisions": 3
+      }
+    ],
+    "twoPairs": [
+      {
+        "tag": "1-plain",
+        "arm": "plain",
+        "cost": 0.2564096,
+        "cliUsd": 0.2564096,
+        "hindsightUsd": 0,
+        "seconds": 85.064,
+        "nativeMs": 76008,
+        "outputTokens": 5305,
+        "cacheReadInputTokens": 224748,
+        "hookContextBytes": {},
+        "hindsightTokens": null,
+        "verifiedRevisions": 3
+      },
+      {
+        "tag": "1-kiba-mem-off",
+        "arm": "kiba-mem-off",
+        "cost": 0.28837080000000004,
+        "cliUsd": 0.28837080000000004,
+        "hindsightUsd": 0,
+        "seconds": 68.752,
+        "nativeMs": 59700,
+        "outputTokens": 6375,
+        "cacheReadInputTokens": 230074,
+        "hookContextBytes": {
+          "session-start": 4587,
+          "prompt-submit": 0
+        },
+        "hindsightTokens": null,
+        "verifiedRevisions": 3
+      },
+      {
+        "tag": "1-kiba-mem-on",
+        "arm": "kiba-mem-on",
+        "cost": 0.2520663,
+        "cliUsd": 0.24541980000000002,
+        "hindsightUsd": 0.0066465,
+        "seconds": 63.884,
+        "nativeMs": 54833,
+        "outputTokens": 4769,
+        "cacheReadInputTokens": 225239,
+        "hookContextBytes": {
+          "session-start": 4587,
+          "prompt-submit": 2099
+        },
+        "hindsightTokens": {
+          "llm_calls": 6,
+          "llm_input": 31146,
+          "llm_cached": 26172,
+          "llm_output": 11618,
+          "embed_calls": 14,
+          "embed_tokens": 3919
+        },
+        "verifiedRevisions": 3
+      },
+      {
+        "tag": "2-kiba-mem-on",
+        "arm": "kiba-mem-on",
+        "cost": 0.25806264,
+        "cliUsd": 0.2514732,
+        "hindsightUsd": 0.00658944,
+        "seconds": 59.775,
+        "nativeMs": 50724,
+        "outputTokens": 4772,
+        "cacheReadInputTokens": 200366,
+        "hookContextBytes": {
+          "session-start": 4587,
+          "prompt-submit": 1610
+        },
+        "hindsightTokens": {
+          "llm_calls": 6,
+          "llm_input": 31050,
+          "llm_cached": 26172,
+          "llm_output": 11531,
+          "embed_calls": 14,
+          "embed_tokens": 3721
+        },
+        "verifiedRevisions": 3
+      },
+      {
+        "tag": "2-kiba-mem-off",
+        "arm": "kiba-mem-off",
+        "cost": 0.27830619999999995,
+        "cliUsd": 0.27830619999999995,
+        "hindsightUsd": 0,
+        "seconds": 69.478,
+        "nativeMs": 60426,
+        "outputTokens": 6010,
+        "cacheReadInputTokens": 253011,
+        "hookContextBytes": {
+          "session-start": 4587,
+          "prompt-submit": 0
+        },
+        "hindsightTokens": null,
+        "verifiedRevisions": 3
+      },
+      {
+        "tag": "2-plain",
+        "arm": "plain",
+        "cost": 0.2592908,
+        "cliUsd": 0.2592908,
+        "hindsightUsd": 0,
+        "seconds": 63.74,
+        "nativeMs": 54688,
+        "outputTokens": 5569,
+        "cacheReadInputTokens": 199274,
+        "hookContextBytes": {},
+        "hindsightTokens": null,
+        "verifiedRevisions": 3
+      }
+    ]
+  },
+  "reproduce": [
+    "orch bench run superagent-parity --allow-paid --one-pair",
+    "orch bench run superagent-parity --allow-paid"
+  ]
+}

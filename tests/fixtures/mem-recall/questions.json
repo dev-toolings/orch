@@ -1,0 +1,102 @@
+[
+ {
+  "id": "F01",
+  "q": "Comment s'appelle le serveur de staging du projet Atlas ?",
+  "a": "bivouac-7"
+ },
+ {
+  "id": "F02",
+  "q": "Quel jour lance-t-on les migrations de base sur Atlas ?",
+  "a": "jeudi"
+ },
+ {
+  "id": "F03",
+  "q": "Quel est le port local de l'API Atlas ?",
+  "a": "4817"
+ },
+ {
+  "id": "F04",
+  "q": "Comment s'appelle la base de test d'Atlas ?",
+  "a": "atlas_qa_ember"
+ },
+ {
+  "id": "F05",
+  "q": "Quel est le client pilote d'Atlas ?",
+  "a": "orbe transports"
+ },
+ {
+  "id": "F06",
+  "q": "En quelle langue doivent être les messages de commit d'Atlas ?",
+  "a": "anglais"
+ },
+ {
+  "id": "F07",
+  "q": "Quel est le budget cloud mensuel maximum d'Atlas, en euros ?",
+  "a": "340"
+ },
+ {
+  "id": "F08",
+  "q": "Quel feature flag active la nouvelle facturation d'Atlas ?",
+  "a": "atlas_billing_v3"
+ },
+ {
+  "id": "F09",
+  "q": "Sur quel canal Slack partent les alertes d'Atlas ?",
+  "a": "atlas-pager"
+ },
+ {
+  "id": "F10",
+  "q": "Quel est le timeout HTTP des workers Atlas, en secondes ?",
+  "a": "90"
+ },
+ {
+  "id": "F11",
+  "q": "Quelle librairie de dates utilise Atlas ?",
+  "a": "luxon"
+ },
+ {
+  "id": "F12",
+  "q": "Comment s'appelle la responsable produit d'Atlas ?",
+  "a": "ronsard"
+ },
+ {
+  "id": "F13",
+  "q": "Quel est le format des tags de release d'Atlas ?",
+  "a": "atlas-aaaa.mm.n"
+ },
+ {
+  "id": "F14",
+  "q": "Quel outil d'accès à la base utilise-t-on sur Atlas ?",
+  "a": "kysely"
+ },
+ {
+  "id": "F15",
+  "q": "Dans quelle région cloud Atlas est-il déployé ?",
+  "a": "eu-central-1"
+ },
+ {
+  "id": "F16",
+  "q": "Dans quel bucket vont les exports d'Atlas ?",
+  "a": "atlas-exports-cold"
+ },
+ {
+  "id": "F17",
+  "q": "Quel est le seuil d'alerte de latence p95 d'Atlas, en ms ?",
+  "a": "380"
+ },
+ {
+  "id": "F18",
+  "q": "Quel est le nom de code de la v2 d'Atlas ?",
+  "a": "heron"
+ },
+ {
+  "id": "F19",
+  "q": "Combien de lignes au plus doit faire une PR d'Atlas ?",
+  "a": "400"
+ },
+ {
+  "id": "F20",
+  "q": "Tous les combien de jours tourne la clé de chiffrement d'Atlas ?",
+  "a": "14"
+ }
+]

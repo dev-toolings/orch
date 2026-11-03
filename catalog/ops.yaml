@@ -1,0 +1,7 @@
+# Host controls (orch ops check, routine ops-check). Read-only: nothing here
+# changes the host; fixing a FAIL is the operator's call.
+# Ports that may listen on every interface. Anything else listening beyond
+# localhost is reported (admin stays private: tailnet or SSH tunnel).
+public_ports: [22]
+# The newest encrypted brain backup must be younger than this.
+backup_max_age_hours: 26

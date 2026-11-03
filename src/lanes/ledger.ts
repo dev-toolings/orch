@@ -1,0 +1,190 @@
+// Lane ledger: one append-only JSON line per finished lane run and per closed
+// lane (integrated, dropped, no change), under the state dir. It is the
+// evidence `lane route` reads; never a memory note, never a model call.
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { stateDir } from "../core/paths.ts";
+import type { Status, Usage } from "../harness/harness.ts";
+import type { SpecFeatures } from "./route.ts";
+import type { GateTiming } from "./timing.ts";
+
+export interface RunRecord {
+  kind: "run";
+  id: string;
+  at: string;
+  repo: string;
+  to: string;
+  model: string;
+  effort: string;
+  channel: string;
+  status: Status;
+  changed: boolean;
+  verifyOk: boolean | null;
+  verifiedSha?: string;
+  features: SpecFeatures;
+  diff: { files: string[]; insertions: number; deletions: number };
+  outOfScope: string[];
+  durationS: number;
+  usage: Usage;
+  gate?: GateTiming;
+  // Claude runs resumed because they ended without a LANE line
+  continued?: number;
+}
+
+// superseded: dropped because another lane for the same spec was kept (an
+// A/B, a retry): it says nothing about the worker, so routing ignores it.
+export type Outcome = "integrated" | "dropped" | "nochange" | "superseded";
+
+export interface OutcomeRecord {
+  kind: "outcome";
+  id: string;
+  at: string;
+  outcome: Outcome;
+  by: "integrate" | "gc";
+  repo?: string;
+  // A delivered lane: the branch its change was committed to.
+  branch?: string;
+  delivery?: { commit: string; pushed: boolean; prUrl?: string };
+}
+
+// A gate refusal, kept as evidence (it prompts a spec or harness fix, it is
+// not a worker failure on its own).
+export interface GateRecord { kind: "gate"; id: string; at: string; reasons: string[] }
+
+// A review of a lane branch: the gate needs `ship` from one for a risky lane.
+export interface ReviewFinding { text: string; frequency: number; severity: number; product: number; action: "fix" | "backlog" }
+export interface ReviewRecord {
+  kind: "review"; id: string; at: string; to: string; model: string; effort: string; verdict: Verdict;
+  reviewedSha?: string; ok?: boolean; status?: string; findings?: ReviewFinding[];
+}
+export type Verdict = "ship" | "fix-first" | "rethink" | "unknown";
+
+export type VoteRole = "reviewer" | "adversary" | "judge";
+
+// Adversarial 2-of-3 vote (ledger evidence). The integrate gate still needs
+// one `ship` review for a risky spec; requiring two-of-three is a follow-up.
+export interface VoteRecord {
+  kind: "vote";
+  id: string;
+  at: string;
+  to: string;
+  role: VoteRole;
+  verdict: Verdict;
+}
+
+export type LedgerRow = RunRecord | OutcomeRecord | GateRecord | ReviewRecord | VoteRecord;
+const KINDS = new Set(["run", "outcome", "gate", "review", "vote"]);
+
+export function voteTally(rows: LedgerRow[], id: string): { ship: number; other: number; total: number; passed: boolean } {
+  const votes = rows.filter((row): row is VoteRecord => row.kind === "vote" && row.id === id);
+  const ship = votes.filter((vote) => vote.verdict === "ship").length;
+  return { ship, other: votes.length - ship, total: votes.length, passed: votes.length >= 3 && ship >= 2 };
+}
+
+export interface HarnessSummary {
+  to: string;
+  runs: number;
+  integrated: number;
+  failed: number;
+  meanTokens?: number;
+  meanDurationS?: number;
+  gateRefusals: number;
+}
+
+export const ledgerPath = (root = stateDir()) => join(root, "lanes.jsonl");
+
+export function appendLedger(row: LedgerRow, root = stateDir()): void {
+  mkdirSync(root, { recursive: true });
+  appendFileSync(ledgerPath(root), `${JSON.stringify(row)}\n`, { mode: 0o600 });
+}
+
+// A torn or hand-edited line is skipped, never fatal: routing degrades to the
+// static rules, it does not stop a lane.
+export function readLedger(root = stateDir()): LedgerRow[] {
+  const p = ledgerPath(root);
+  if (!existsSync(p)) return [];
+  return readFileSync(p, "utf8").split("\n").flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      const row = JSON.parse(line) as LedgerRow;
+      return row && KINDS.has(row.kind) && typeof row.id === "string" ? [row] : [];
+    } catch { return []; }
+  });
+}
+
+// One verdict per run: integrated is a success; dropped, failed, refused and
+// timeout are failures; the rest (noop, blocked, unavailable, still open) say
+// nothing about the worker's skill and are left out.
+export function verdicts(rows: LedgerRow[]): { run: RunRecord; ok: boolean }[] {
+  const outcome = new Map<string, Outcome>();
+  for (const r of rows) if (r.kind === "outcome") outcome.set(r.id, r.outcome);
+  return rows.flatMap((r): { run: RunRecord; ok: boolean }[] => {
+    if (r.kind !== "run" || r.status === "unavailable") return [];
+    const o = outcome.get(r.id);
+    if (o === "integrated") return [{ run: r, ok: true }];
+    if (o === "superseded") return [];
+    if (o === "dropped" || ["failed", "refused", "timeout"].includes(r.status)) return [{ run: r, ok: false }];
+    return [];
+  });
+}
+
+export function summarize(rows: LedgerRow[]): HarnessSummary[] {
+  const runsByHarness = new Map<string, RunRecord[]>();
+  for (const row of rows) {
+    if (row.kind !== "run") continue;
+    const runs = runsByHarness.get(row.to) ?? [];
+    runs.push(row);
+    runsByHarness.set(row.to, runs);
+  }
+
+  const verdictCounts = new Map<string, { integrated: number; failed: number }>();
+  for (const verdict of verdicts(rows)) {
+    const counts = verdictCounts.get(verdict.run.to) ?? { integrated: 0, failed: 0 };
+    if (verdict.ok) counts.integrated++;
+    else counts.failed++;
+    verdictCounts.set(verdict.run.to, counts);
+  }
+
+  return [...runsByHarness.entries()]
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([to, runs]) => {
+      const ids = new Set(runs.map((run) => run.id));
+      const tokens = runs.flatMap((run) => {
+        const usage = run.usage;
+        if (typeof usage?.total === "number" && Number.isFinite(usage.total)) return [usage.total];
+        if (typeof usage?.input === "number" && Number.isFinite(usage.input)
+          && typeof usage.output === "number" && Number.isFinite(usage.output)) {
+          return [usage.input + usage.output];
+        }
+        return [];
+      });
+      const durations = runs.flatMap((run) => Number.isFinite(run.durationS) ? [run.durationS] : []);
+      const counts = verdictCounts.get(to) ?? { integrated: 0, failed: 0 };
+      const gateRefusals = rows.filter((row) => row.kind === "gate" && ids.has(row.id)).length;
+      return {
+        to,
+        runs: runs.length,
+        integrated: counts.integrated,
+        failed: counts.failed,
+        ...(tokens.length ? { meanTokens: Math.round(tokens.reduce((sum, value) => sum + value, 0) / tokens.length) } : {}),
+        ...(durations.length ? { meanDurationS: Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) } : {}),
+        gateRefusals,
+      };
+    });
+}
+
+// The last review of a lane decides: a later fix-first overrides an earlier ship.
+export function lastReview(rows: LedgerRow[], id: string): ReviewRecord | undefined {
+  let review: ReviewRecord | undefined;
+  for (const r of rows) if (r.kind === "review" && r.id === id) review = r;
+  return review;
+}
+
+export function lastVerdict(rows: LedgerRow[], id: string): Verdict | undefined {
+  return lastReview(rows, id)?.verdict;
+}
+
+export function parseVerdict(message: string): Verdict {
+  const m = /VERDICT:\s*(ship|fix-first|rethink)\b/i.exec(message);
+  return m ? (m[1].toLowerCase() as Verdict) : "unknown";
+}

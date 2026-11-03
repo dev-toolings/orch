@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="orch">
+  <defs>
+    <linearGradient id="orch-grad" x1="16" y1="16" x2="50" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9B3BFF" />
+      <stop offset="1" stop-color="#00E5FF" />
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="12" fill="#0B0B0F" />
+  <circle cx="32" cy="34" r="14" fill="none" stroke="url(#orch-grad)" stroke-width="4" />
+  <path d="M32 18v-6M20 41l-5 4M44 41l5 4" stroke="url(#orch-grad)" stroke-width="2.5" stroke-linecap="round" />
+  <circle cx="32" cy="9.5" r="3" fill="url(#orch-grad)" />
+  <circle cx="13" cy="47" r="3" fill="url(#orch-grad)" />
+  <circle cx="51" cy="47" r="3" fill="url(#orch-grad)" />
+</svg>

@@ -1,0 +1,44 @@
+# Kiba: native Claude only (Codex and Grok are lane workers and reviewers).
+# Native execution does not inherit the worker model. orch serve workers and
+# `lane route` run on an effort ladder by kind.
+name: kiba
+lead:
+  claude: { model: opus, effort: medium, permission_mode: bypassPermissions }
+lanes:
+  codex: { model: gpt-6-luna, effort: medium }
+  grok: { model: grok-4.7-build-fast, effort: high }
+  claude: { model: sonnet, effort: medium }
+explore:
+  claude: haiku
+review:
+  claude: { to: codex, model: gpt-6-astra, effort: high, fallback: [grok] }
+  codex: { to: claude, model: sonnet, effort: medium, fallback: [claude, grok] }
+  grok: { to: codex, model: gpt-6-luna, effort: high, fallback: [codex, claude] }
+contest: { to: [codex, grok, claude], judge: { model: fable, effort: high } }
+improve: { model: sonnet, effort: medium }
+planner: { to: codex, effort: low }
+# Never inline: the lead routes, lanes execute (self_max_files 0).
+route: { order: [claude, codex, grok], self_max_files: 0, min_samples: 5, mechanical_max_files: 4 }
+kiba:
+  ladder:
+    mechanical: { model: haiku, effort: low }
+    normal: { model: sonnet, effort: medium }
+    risky: { model: opus, effort: high }
+  # Two failures: one rung up (model, then effort, never above high), else
+  # back to the lead. max_attempts <= escalate_after + 1. xhigh/max: spec REASONING only.
+  escalate_after: 2
+  max_attempts: 3
+  lane_timeout_seconds: 900
+  fresh_session_percent: 60
+  fresh_session_turns: 40
+  watchdog: { stall_seconds: 300, max_turns_without_test: 30, tick_seconds: 15 }
+limits:
+  max_concurrent_ceiling: 4
+  verify_concurrent: 2
+  worker_gib: 0.5
+  verify_gib: 1.5
+  reserve_gib: 4
+  max_depth: 1
+  report_max_bytes: 3072
+  timeout_seconds: 900
+  fresh_session_percent: 60

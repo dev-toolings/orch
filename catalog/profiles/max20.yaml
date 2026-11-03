@@ -1,0 +1,50 @@
+# Default profile. Model ids per harness; null means "inherit, never pass one".
+name: max20
+lead:
+  claude: { model: opus, effort: high, permission_mode: bypassPermissions }
+# Worker lanes start at medium (Grok stays at high: operator rule); `lane route`
+# moves them on its effort ladder (low for MECHANICAL, high for risk or a
+# retry). xhigh/max only through a spec's REASONING, never by profile default.
+lanes:
+  codex: { model: gpt-6-luna, effort: medium }
+  grok: { model: grok-4.7-build-fast, effort: high }
+  claude: { model: sonnet, effort: medium }
+explore:
+  claude: haiku
+# coordinator = lead, explore = read/ask, edit = lane writes, review = configurable
+roles:
+  coordinator:
+    claude: { model: opus, effort: high }
+    codex: { model: gpt-6-astra, effort: high }
+  explore:
+    claude: { model: haiku, effort: low }
+    codex: { effort: low }
+  edit:
+    claude: { model: sonnet, effort: medium }
+    codex: { model: gpt-6-luna, effort: medium }
+  review:
+    claude: { effort: high }
+    codex: { effort: xhigh }
+review:
+  # cross-family reviewer of the lead's work; `high` is used by `lane review --risk high`
+  claude: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium }, fallback: [grok] }
+  codex: { to: claude, model: opus, effort: high, fallback: [claude, grok] }
+  grok: { to: codex, model: gpt-6-luna, effort: xhigh, high: { model: gpt-6.1-sol, effort: medium }, fallback: [codex, claude] }
+# `lane contest`: the same question to these harnesses, then a judge on another model
+contest: { to: [codex, grok, claude], judge: { model: fable, effort: high } }
+# `orch improve run`: the day's evidence turned into proposals (read-only)
+improve: { model: opus, effort: high }
+# optional read-only planner (architecture / simplification)
+planner: { to: codex, effort: medium }
+# `lane route`: lane harness order (first installed wins) and the inline size limit
+route: { order: [claude, codex, grok], self_max_files: 2, min_samples: 5, mechanical_max_files: 4 }
+limits:
+  max_concurrent_ceiling: 8
+  verify_concurrent: 2
+  worker_gib: 0.5
+  verify_gib: 1.5
+  reserve_gib: 4
+  max_depth: 1
+  report_max_bytes: 4096
+  timeout_seconds: 1200
+  fresh_session_percent: 60

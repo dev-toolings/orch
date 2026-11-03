@@ -1,0 +1,106 @@
+# Routines (src/routines), for a host that is not always on. There is no
+# fixed hour: `orch-routines.timer` ticks two minutes after the host starts
+# and every 15 minutes while it is up (a tick missed during sleep runs on
+# wake), and each tick runs, in this order, every enabled routine that is
+# due: last success started `every` ago, and last failure ended `retry`
+# ago (default: the shorter of `every` and 1h), give or take two minutes so a
+# tick landing a little early still counts. One routine at a time, each
+# command under a timeout, every run journaled. Alerts (catalog/presence.yaml
+# `notify`): at the first failure, a reminder at most once a day while it
+# keeps failing, and a note when it recovers. Durations: 15m, 2h, 1d, 7d.
+# `orch` in a command is this checkout's orch.
+routines:
+  - id: mem-import
+    description: copy new orch mem notes into the brain (while mem is on files)
+    every: 1d
+    commands: [[orch, brain, import-notes]]
+    timeout_minutes: 10
+    enabled: true
+  - id: brain-backup
+    description: encrypted dump of every domain, then a restore check
+    every: 1d
+    commands: [[orch, brain, backup], [orch, brain, restore-check]]
+    timeout_minutes: 60
+    enabled: true
+  # Paid: calls the embed provider (OPENAI_API_KEY). Fills what a failed
+  # write-time embedding left.
+  # The lanes' shared bun cache grows by every install (2 GB seen); the next
+  # install refills it. Skipped while a lane runs.
+  - id: worker-cache
+    description: purge the lane workers' bun cache
+    every: 7d
+    commands: [[lane, gc, --cache]]
+    timeout_minutes: 10
+    enabled: true
+  # Orca never forgets a lane checkout git removed and refuses to remove one
+  # outside its own directories; its state can be edited only while Orca is
+  # quit. Every tick tries, so the one after boot (Orca not open yet) cleans.
+  - id: orca-prune
+    description: drop the records Orca keeps for removed lane worktrees (skipped while Orca runs)
+    every: 15m
+    commands: [[lane, gc, --orca]]
+    timeout_minutes: 2
+    enabled: true
+  - id: brain-embed
+    description: fill missing vectors of every domain
+    every: 1h
+    commands: [[orch, brain, embed]]
+    timeout_minutes: 30
+    enabled: true
+  # Paid: Hindsight extracts facts from each new item (ANTHROPIC_API_KEY).
+  # Incremental: unchanged notes and exhaust items are skipped.
+  - id: hindsight-seed
+    description: copy new orch mem notes and the day's exhaust (lanes, asks, routines, improve, CR) into the Hindsight banks
+    every: 1d
+    commands: [[orch, brain, hindsight-seed]]
+    timeout_minutes: 30
+    enabled: true
+  # Enable only after selecting and accepting the brain recall provider (D).
+  - id: transcript-ingest
+    description: ingest interactive transcript evidence with embeddings only
+    every: 1h
+    commands: [[orch, brain, ingest-transcripts, --allow-paid]]
+    timeout_minutes: 30
+    enabled: false
+  - id: docs-update
+    description: refresh the local documentation corpus
+    every: 7d
+    retry: 6h
+    commands: [[orch, docs, update]]
+    timeout_minutes: 60
+    enabled: true
+  - id: improve
+    description: daily improvement proposals from the day's sessions and failures, sent to the phone; the operator validates
+    every: 1d
+    commands: [[orch, improve, run]]
+    timeout_minutes: 30
+    enabled: true
+  - id: reflect
+    description: "nightly reflection: MEMORY.md updated under guards, USER.md candidates and skill drafts sent to the phone; paid, one read-only Claude run"
+    every: 1d
+    commands: [[orch, reflect, run]]
+    timeout_minutes: 30
+    enabled: true
+  # ~/.codex/config.toml sets check_for_update_on_startup = false: the update
+  # dialog blocked every unattended Codex launch (Orca, lanes) at its first
+  # screen. Running sessions keep their binary; new ones get the update.
+  - id: codex-update
+    description: keep the Codex CLI current without its startup dialog
+    every: 1d
+    retry: 6h
+    commands: [[bun, install, -g, "@openai/codex@latest"]]
+    timeout_minutes: 10
+    enabled: true
+  - id: rules-bench
+    description: "nightly reference missions (bug, feature, contract); keep a candidate rule only if the bench improves"
+    every: 1d
+    commands: [[orch, rule, bench]]
+    timeout_minutes: 30
+    enabled: true
+  # Last, so it sees what the routines before it just did.
+  - id: ops-check
+    description: host controls (SSH, firewall, exposure, backups, routines)
+    every: 1d
+    commands: [[orch, ops, check]]
+    timeout_minutes: 5
+    enabled: true

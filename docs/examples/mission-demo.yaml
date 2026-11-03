@@ -1,0 +1,13 @@
+# Demo mission: two independent specs, then a dependent one.
+# Example:
+#   ORCH_POLICY=/tmp/orch-policy.yaml lane batch --mission docs/examples/mission-demo.yaml
+name: demo
+concurrency: 2
+nodes:
+  - id: types
+    spec: specs/types.txt
+  - id: docs
+    spec: specs/docs.txt
+  - id: readme
+    spec: specs/readme.txt
+    needs: [types, docs]

@@ -1,0 +1,2 @@
+[test]
+preload = ["./tests/tmpdir.preload.ts", "./tests/lane-branches.preload.ts"]

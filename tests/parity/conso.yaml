@@ -1,0 +1,26 @@
+# Consumption bench (src/checks/conso.ts, make bench-conso): realistic
+# multi-prompt sessions on this repository, played by plain Claude (A),
+# kiba without Hindsight (B) and kiba + Hindsight (C). Each session is
+# one Claude Code conversation (--session-id, then --resume), so the cost of
+# context that piles up (the per-prompt recall stays in the history) shows.
+# Prompts stay read-only or tiny: the bench measures tokens, not quality.
+sessions:
+  - id: explore
+    prompts:
+      - "Explique en 5 lignes comment `lane integrate` décide d'intégrer ou de refuser une lane."
+      - "Où est pris le verrou d'intégration, et que se passe-t-il si le processus qui le tient meurt ?"
+      - "Comment `lane route` choisit-il le worker ? Cite le fichier et la fonction."
+      - "Et le ledger des lanes, il est écrit où et quand ?"
+      - "Résume en 3 points ce qu'on a vu dans cette session."
+  - id: suivi
+    prompts:
+      - "On en était où sur la mémoire de Kiba ?"
+      - "Quels résultats a donnés le banc mémoire ?"
+      - "Quel port utilise Hindsight, et pourquoi pas 8888 ?"
+      - "Qu'est-ce qui reste à faire selon toi, en 3 points ?"
+  - id: edit
+    prompts:
+      - "Lis src/ops/usage.ts et dis-moi en 3 lignes ce que fait `orch ops usage`."
+      - "Ajoute un commentaire d'une ligne au-dessus de la première fonction exportée de ce fichier pour décrire son rôle. Petit changement : fais-le toi-même, sans lane ni worker, sans commit."
+      - "Montre-moi le diff."
+      - "Annule ce changement (git checkout du fichier)."

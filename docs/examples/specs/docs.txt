@@ -1,0 +1,6 @@
+OBJECTIVE: add a one-line usage note
+FILES: USAGE.md
+INTERFACES: none
+CONSTRAINTS: create only USAGE.md
+VERIFY: test -f USAGE.md
+ACCEPT: USAGE.md exists

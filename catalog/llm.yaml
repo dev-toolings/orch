@@ -1,0 +1,27 @@
+# Model providers for the memory brain (src/llm/llm.ts).
+#   embed:  text -> vectors stored in pgvector
+#   decide: short classification or extraction during ingestion and routines
+# Keys: the environment, else <repo>/.env (copy .env.example, chmod 600).
+# Switch at run time: `orch llm use embed|decide <provider>`; `orch llm status`.
+# `space`: providers in one space give comparable vectors (same model, same
+# dimensions). Another space means re-embedding everything: `orch llm use`
+# refuses it without --force.
+dimensions: 1024
+
+embed:
+  default: openai
+  providers:
+    # Anthropic has no embedding model. OpenAI key: platform.openai.com > API
+    # keys. The API shortens the vector to `dimensions`; at most 8192 tokens
+    # per text. The text of every embedded memory goes to OpenAI.
+    openai: { kind: openai, base_url: https://api.openai.com/v1, model: text-embedding-3-large, space: openai-text-embedding-3-large, key_env: OPENAI_API_KEY }
+    # Once the 3090 is in: a Qwen embedding model behind vLLM or Ollama
+    # (another space: re-embed, then `orch llm use embed qwen-local --force`).
+    # qwen-local: { kind: openai-compatible, base_url: http://127.0.0.1:8000/v1, model: <pin at setup>, space: <model id>, query_prefix: "<the model's query instruction>" }
+
+decide:
+  default: claude
+  providers:
+    claude: { kind: anthropic, model: claude-opus-5-5, effort: low, key_env: ANTHROPIC_API_KEY }
+    # Once the 3090 is in, next to the embedding model if both fit:
+    # qwen-local: { kind: openai-compatible, base_url: http://127.0.0.1:8000/v1, model: <pin at setup> }

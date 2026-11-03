@@ -1,0 +1,54 @@
+# Memory brain database. Started by `orch brain up`, which passes the repo
+# .env (BRAIN_PG_ADMIN_PASSWORD) for interpolation. Bound to localhost only;
+# remote access goes through the tailnet, never a public port.
+name: orch-brain
+services:
+  brain-postgres:
+    image: pgvector/pgvector:pg17
+    container_name: brain-postgres
+    restart: unless-stopped
+    # Docker's 64 MB /dev/shm is too small for Postgres parallel queries: a
+    # Hindsight bank clone failed with "could not resize shared memory segment".
+    shm_size: 512m
+    environment:
+      POSTGRES_PASSWORD: ${BRAIN_PG_ADMIN_PASSWORD:?set BRAIN_PG_ADMIN_PASSWORD in .env (orch brain init)}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - brain-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight-api:1.1.0-slim
+    container_name: brain-hindsight
+    restart: unless-stopped
+    depends_on:
+      brain-postgres: { condition: service_healthy }
+    environment:
+      HINDSIGHT_API_DATABASE_URL: postgresql://hindsight:${HINDSIGHT_PG_PASSWORD:?set HINDSIGHT_PG_PASSWORD in .env (orch brain init)}@brain-postgres:5432/hindsight
+      HINDSIGHT_API_VECTOR_EXTENSION: pgvector
+      HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE: french
+      HINDSIGHT_API_LLM_PROVIDER: anthropic
+      HINDSIGHT_API_LLM_MODEL: claude-haiku-5-5
+      HINDSIGHT_API_LLM_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      HINDSIGHT_API_EMBEDDINGS_PROVIDER: openai
+      HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL: text-embedding-3-small
+      HINDSIGHT_API_RERANKER_PROVIDER: rrf
+      # Observation consolidation is disabled. Retain still extracts facts.
+      # The daily manual consolidation routine is also disabled in the catalog.
+      HINDSIGHT_API_ENABLE_OBSERVATIONS: "false"
+      HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION: "false"
+      HINDSIGHT_API_WORKER_ID: kiba-1
+    ports:
+      - "127.0.0.1:8899:8888"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+volumes:
+  brain-pgdata:

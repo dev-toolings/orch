@@ -1,0 +1,92 @@
+# Emilien parity corpus: what Powlisher publicly shows of Emilien, as testable
+# cases for Kiba. Replaces powlisher-v1 (39 cases, mostly never runnable).
+#
+# Source of truth: the migration thread of 2026-10-24
+# (https://x.com/powlisher/status/2113926146089680954) and the earlier posts
+# collected in .ref/tasks. Only level 0 cases run in `make check`; the others
+# list the work left, gated by the architecture step that delivers them
+# (docs/architecture.md).
+#
+#   level  0 automated, no model · 3 live lead session · 4 live delegation
+#   gate   v1        delivered and checked
+#          install   code delivered and tested, waits for the operator's
+#                    go-ahead to install and enable it on the host
+#          brain     Postgres + pgvector memory
+#          presence  persistent Claude session, reachable from the phone
+#          routines  scheduled wake-ups, one at a time
+#          ops       live quotas and controls, backups
+
+schema_version: 2
+corpus_id: emilien-parity
+created_at: 2026-10-24
+
+cases:
+  # ---- persona
+  - { id: PW01, family: persona, level: 0, gate: v1, title: "Kiba states its role, honest about its model" }
+
+  # ---- memory (delivered on files, moving to the brain)
+  - { id: PW10, family: memory, level: 0, gate: v1, title: "A decision saved in one session is found, with its id, in another" }
+  - { id: PW11, family: memory, level: 0, gate: v1, title: "Memory is shared across sessions with provenance kept" }
+  - { id: PW13, family: memory, level: 0, gate: v1, title: "The lead scope stays invisible to a plain session" }
+  - { id: PW30, family: memory, level: 0, gate: v1, title: "A new session finds the stopping point first" }
+  - id: EM10
+    family: memory
+    level: 0
+    gate: v1
+    title: "Memories live in Postgres + pgvector, one database per domain, one role per database"
+    source: "https://x.com/powlisher/status/2113926201995657633"
+  - id: EM11
+    family: memory
+    level: 0
+    gate: install
+    title: "A restore keeps the memory count and the 5 control queries' results"
+    source: "https://x.com/powlisher/status/2113926164506869791"
+  - id: EM12
+    family: memory
+    level: 3
+    gate: brain
+    title: "Mails, projects and documents are ingested, idempotently, with their source"
+
+  # ---- presence
+  - id: EM20
+    family: presence
+    level: 3
+    gate: v1
+    title: "Kiba picks the conversation up where it stopped after a restart"
+    source: "https://x.com/powlisher/status/2113926164506869791"
+  - id: EM21
+    family: presence
+    level: 3
+    gate: v1
+    title: "Reachable from the iPhone over the tailnet; nothing exposed on the internet"
+    source: "https://x.com/powlisher/status/2113926210514223129"
+
+  # ---- routines
+  - id: EM30
+    family: routines
+    level: 4
+    gate: v1
+    title: "Six routines wake up one at a time and leave a trace"
+
+  # ---- operations
+  - id: EM40
+    family: ops
+    level: 0
+    gate: install
+    title: "Host controls (key-only SSH, root refused, firewall, private admin) all green"
+    source: "https://x.com/powlisher/status/2113926201995657633"
+  - id: EM41
+    family: ops
+    level: 3
+    gate: v1
+    title: "Quotas and consumption visible live from the phone (ask Kiba over Remote Control)"
+
+  # ---- token budget and delegation (delivered)
+  - { id: PW62, family: budget, level: 0, gate: v1, title: "A cheaper profile exists for workers" }
+  - { id: T01, family: budget, level: 0, gate: v1, title: "Global instructions stay small" }
+  - { id: T02, family: budget, level: 0, gate: v1, title: "A lane only launches its target harness, no model call of its own" }
+  - { id: T03, family: budget, level: 0, gate: v1, title: "Lane reports are bounded" }
+  - { id: T08, family: budget, level: 0, gate: v1, title: "Docs corpus declared, versioned and searched on demand" }
+  - { id: T04, family: budget, level: 0, gate: v1, title: "A mission runs each node through laneRun and the integrate gate" }
+  - { id: T05, family: budget, level: 0, gate: v1, title: "Daily spend settings are informational and never block work" }
+  - { id: T06, family: budget, level: 0, gate: v1, title: "Delegation stays on lane auto / laneRun, never a side path" }

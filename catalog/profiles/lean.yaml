@@ -1,0 +1,44 @@
+# Cheaper profile: lower worker and review effort.
+name: lean
+lead:
+  claude: { model: opus, effort: medium, permission_mode: bypassPermissions }
+lanes:
+  codex: { model: gpt-6-luna, effort: medium }
+  grok: { model: grok-4.7-build-fast, effort: high }
+  claude: { model: haiku, effort: medium }
+explore:
+  claude: haiku
+roles:
+  coordinator:
+    claude: { model: opus, effort: medium }
+    codex: { model: gpt-6-astra, effort: medium }
+  explore:
+    claude: { model: haiku, effort: low }
+    codex: { effort: low }
+  edit:
+    claude: { model: haiku, effort: medium }
+    codex: { model: gpt-6-luna, effort: medium }
+  review:
+    claude: { effort: high }
+    codex: { effort: medium }
+review:
+  claude: { to: codex, model: gpt-6-luna, effort: high, fallback: [grok] }
+  codex: { to: claude, model: sonnet, effort: medium, fallback: [claude, grok] }
+  grok: { to: codex, model: gpt-6-luna, effort: high, fallback: [codex, claude] }
+# `lane contest`: the same question to these harnesses, then a judge on another model
+contest: { to: [codex, grok, claude], judge: { model: fable, effort: high } }
+# `orch improve run`: the day's evidence turned into proposals (read-only)
+improve: { model: sonnet, effort: medium }
+planner: { to: codex, effort: low }
+# `lane route`: lane harness order (first installed wins) and the inline size limit
+route: { order: [codex, claude, grok], self_max_files: 2, min_samples: 5, mechanical_max_files: 4 }
+limits:
+  max_concurrent_ceiling: 2
+  verify_concurrent: 1
+  worker_gib: 0.5
+  verify_gib: 1.5
+  reserve_gib: 4
+  max_depth: 1
+  report_max_bytes: 3072
+  timeout_seconds: 900
+  fresh_session_percent: 60

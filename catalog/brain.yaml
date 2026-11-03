@@ -1,0 +1,70 @@
+# Memory brain (src/brain): Postgres + pgvector, one database per domain,
+# two roles per database (rw for ingestion, ro for recall). Run by
+# infra/compose.yml; credentials live in .env (orch brain init writes the
+# missing ones). `compta` is never searched unless asked for by name.
+host: 127.0.0.1
+port: 5433
+container: brain-postgres
+domains: [projets, mails, clients, voyages, compta]
+explicit_only: [compta]
+# Transcript ingest is deny-by-default: only these project keys may enter
+# the `projets` domain. An empty list cannot be bypassed by --projects.
+ingest_projects: []
+
+# Where orch mem keeps its notes: `files` (Markdown, ~/.orch/<project>/mem and the state
+# dir) or `brain` (the projets database; recall by meaning, notes embedded as
+# they are written). Switch only once the brain is
+# provisioned and `orch brain import-notes` has run: notes written to files
+# after the import are not seen in brain mode until it runs again.
+mem: brain
+
+# Hook recall backend. Keep Hindsight until the isolated C/D bench is accepted.
+# D can select brain per run with ORCH_MEMORY_PROVIDER=brain.
+memory_provider: hindsight
+
+# Where encrypted dumps go (orch brain backup); the Mac mini copy comes later.
+backup_dir: ~/.local/state/orch/brain/backups
+
+# The 5 control queries a restore must answer like the live base (top 3
+# containing `expect` in source_ref or body). Fill them once the memory holds
+# real data; restore-check fails until 5 are defined.
+# A control whose note gets superseded or forgotten fails: replace it then.
+controls:
+  - { domain: projets, query: "git workflow squash develop main", expect: "20261029T135451Z-workflow-git-d-orch" }
+  - { domain: projets, query: "bench tokens ctx rtk", expect: "20261023T165112Z-bench-tokens-ctx-vs-rtk" }
+  - { domain: projets, query: "procédure vérif CVE", expect: "20261022T195844Z-procedure-de-verif-cve" }
+  - { domain: projets, query: "lead claude auto mode", expect: "20261023T214745Z-lead-claude-en-auto-mode" }
+  - { domain: projets, query: "VM proxmox pvecli", expect: "20261023T150937Z-vm-du-lab-proxmox" }
+
+# orch brain eval (paid: embeds each query once): questions worded away from
+# the notes' words, two in English, each with the note it must find in the
+# top 3. Measured 2026-10-24 on OpenAI text-embedding-3-large: 9/10.
+recall_min: 9
+recall:
+  - { domain: projets, query: "comment on intègre une branche, on écrase les commits ?", expect: "20261029T135451Z-workflow-git-d-orch" }
+  - { domain: projets, query: "machine virtuelle sur l'hyperviseur du labo", expect: "vm-du-lab-proxmox" }
+  - { domain: projets, query: "mise à niveau du courtier de messages", expect: "rabbitmq-3-13-vers-4-x" }
+  - { domain: projets, query: "quota de téléchargement d'images de conteneurs sans compte", expect: "docker-hub-2026-10-23" }
+  - { domain: projets, query: "faille de sécurité dans les dépendances de plusieurs dépôts", expect: "cve" }
+  - { domain: projets, query: "confidentialité en ligne et pistage publicitaire", expect: "vie-privee-sur-le-web" }
+  - { domain: projets, query: "désinstaller proprement sans laisser de fichiers", expect: "uninstall-sans-trace" }
+  - { domain: projets, query: "économiser du contexte pour payer moins cher le modèle", expect: "tokens" }
+  - { domain: projets, query: "is a self-hosted CI runner free?", expect: "runner-self-hosted" }
+  - { domain: projets, query: "how do we merge feature branches into develop", expect: "20261029T135451Z-workflow-git-d-orch" }
+
+# Living memory (src/memory/hindsight.ts): Hindsight API in Docker, same
+# compose file as brain-postgres, database `hindsight` with its own role.
+# Extraction: Anthropic (ANTHROPIC_API_KEY); embeddings: OpenAI
+# text-embedding-3-small (OPENAI_API_KEY); reranking: RRF only, no model.
+hindsight:
+  url: http://127.0.0.1:8899
+  container: brain-hindsight
+  bank: kiba
+  recall_max_tokens: 1500
+  # Per-prompt hits under this semantic score are not injected. Sampled on
+  # 2026-11-03 on the kiba banks: off-topic hits score 0.32 to 0.38, on-topic
+  # ones 0.45 to 0.64. Session-start recall keeps every hit.
+  recall_min_semantic: 0.4
+  recall_budget: low
+  timeout_ms: 4000
+  facts_only: true

@@ -1,0 +1,14 @@
+node_modules/
+ui/dist
+.impeccable/
+.sandbox/
+.ref/
+.grok/*
+!.grok/skills/
+*.log
+.ctx/
+.env
+# Local research notes and scraped material (veille/): never versioned
+veille/
+# Local results of the retired architecture bench (archived on archive/benches)
+bench/architecture/results/

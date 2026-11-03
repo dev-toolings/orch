@@ -1,0 +1,56 @@
+# Memory bench: Kiba with a living memory against Claude Code alone.
+# Four configurations answer the same cases in fresh sessions; a blind judge
+# (lane contest, Fable) scores exact / partial / wrong; tokens, hook latency
+# and extraction cost are measured alongside. Billable (levels 3 and 4): run
+# only on the operator's go-ahead. Runner: src/checks/memoire.ts
+# (`make bench-memoire`); the cases are the contract.
+#
+#   config A  claude --continue, native auto-memory on, no orch hooks
+#   config B  kiba today: orch mem on demand, no injection
+#   config C  kiba + Hindsight: SessionStart and prompt recall, retain off for recall
+#
+#   config D  kiba + automatic brain snapshot recall, no extraction
+#   Recall-family sessions disable tools and MCP to prevent answer-key leakage.
+#
+#   family rappel        a decision saved before the session, asked in new words
+#          persona       the same question in five fresh sessions: same stance, same tone
+#          apprentissage a correction given in session N, checked applied in session N+2
+#          ingestion     a fact that only lives in a lane report or a daily report
+
+schema_version: 1
+corpus_id: memoire-bench-recall-v2
+created_at: 2026-10-29
+
+cases:
+  # ---- rappel (expect: the note id the answer must rest on, or key facts)
+  - { id: MR01, family: rappel, level: 3, question: "Quel modèle d'embedding on utilise pour la mémoire et pourquoi pas Voyage ?", expect: "openai text-embedding ; décision opérateur, pas un problème" }
+  - { id: MR02, family: rappel, level: 3, question: "On peut se logger sur Docker Hub pour éviter le rate limit ?", expect: "20261026T191610Z-regle-de-l-operateur-26-10-2026-pas-de-d" }
+  - { id: MR03, family: rappel, level: 3, question: "Pourquoi OpenCode n'est plus dans orch ?", expect: "20261022T130743Z-opencode-retire-d-orch-22-10-2026-decisi" }
+  - { id: MR04, family: rappel, level: 3, question: "Comment on intègre une branche, on écrase les commits ?", expect: "20261029T135451Z-workflow-git-d-orch ; merge --no-ff vers develop, commits préservés, remplace la règle squash du 20-10" }
+  - { id: MR05, family: rappel, level: 3, question: "Je peux laisser des fichiers dans /tmp à la fin d'une tâche ?", expect: "20261023T192303Z-regle-de-l-operateur-2026-10-23-generale" }
+  - { id: MR06, family: rappel, level: 3, question: "Combien coûte un worker avant même de commencer, et à partir de quelle taille on délègue ?", expect: "20261023T224403Z-doctrine-tokens-mesuree-le-23-10-2026-be" }
+  - { id: MR07, family: rappel, level: 3, question: "Qu'est-ce qui a été décidé pour Juliette ?", expect: "pas de seconde agente, décision du 24-10-2026" }
+  - { id: MR08, family: rappel, level: 3, question: "Sur Next.js, je fais du Pages Router ou de l'App Router ?", expect: "20261025T210024Z-next-js-l-operateur-travaille-uniquement" }
+  - { id: MR09, family: rappel, level: 3, question: "Où tourne la base mémoire et sur quel port ?", expect: "brain-postgres, 127.0.0.1:5433" }
+  - { id: MR10, family: rappel, level: 3, question: "Quelle règle a-t-on notée le 22-10 pour le statut des issues OpenTrack ?", expect: "in_review est invalide (BAD_USER_INPUT), in_progress est valide ; ne pas deviner le statut" }
+  - { id: MR11, family: rappel, level: 3, question: "Quand un lead reçoit une question que l'opérateur a peut-être déjà posée ailleurs, il fait quoi ?", expect: "20261027T095441Z-coordination-entre-sessions-lead-27-10-2" }
+  - { id: MR12, family: rappel, level: 3, question: "On a validé Hindsight comment, sur quelles preuves ?", expect: "8 recherches Codex du 28-10, SYNTHESE.md, MIT v1.1.0" }
+
+  # ---- persona (expect: the stance that must hold in all five sessions)
+  - { id: MP01, family: persona, level: 3, question: "T'es qui et tu tournes sur quoi ?", expect: "Kiba, modèle du harness, IA, jamais humain" }
+  - { id: MP02, family: persona, level: 3, question: "Je veux ajouter un retry de 3 fois sur l'appel qui plante, ça te va ?", expect: "rustine nommée comme telle, demande la cause racine, propose le correctif durable" }
+  - { id: MP03, family: persona, level: 3, question: "Fais un backup avant d'écraser le fichier stp", expect: "refuse le backup, écrase en place, rappelle la règle" }
+  - { id: MP04, family: persona, level: 3, question: "Lance le dev server pour vérifier", expect: "ne lance pas, propose typecheck et lecture" }
+  - { id: MP05, family: persona, level: 3, question: "Tu penses quoi d'installer npm pour ce script ?", expect: "Bun seulement, position en une ligne" }
+
+  # ---- apprentissage (session N: correction; session N+2: check without reminder)
+  - { id: MA01, family: apprentissage, level: 4, correction: "Non, les CR vont dans docs/cr/ avec la date en préfixe, pas à la racine de docs.", check: "Écris un CR de la journée", expect: "docs/cr/AAAA-MM-JJ-*.md" }
+  - { id: MA02, family: apprentissage, level: 4, correction: "Arrête de me demander, décide et rapporte en une ligne.", check: "Deux options pour le reranker, laquelle ?", expect: "décide seul, une ligne de rapport, pas de question" }
+  - { id: MA03, family: apprentissage, level: 4, correction: "Les notifications passent par Discord, pas Telegram, tant que les clés manquent.", check: "Préviens-moi quand le backup est fini", expect: "orch presence notify, Discord" }
+  - { id: MA04, family: apprentissage, level: 4, correction: "Le tiret cadratin, jamais, même dans un commit.", check: "Rédige le message de commit", expect: "aucun tiret cadratin ni demi-cadratin" }
+
+  # ---- ingestion (facts only present in a lane report or a daily report)
+  - { id: MI01, family: ingestion, level: 3, question: "Combien de tokens ont coûté les 8 recherches Codex sur la mémoire ?", expect: "~1,2 M au total, rapports de lane ask du 28-10" }
+  - { id: MI02, family: ingestion, level: 3, question: "Quelle lane a échoué hier et pourquoi ?", expect: "la lane failed du ledger de la veille, avec sa raison" }
+  - { id: MI03, family: ingestion, level: 3, question: "Qu'est-ce que la routine improve a proposé hier soir ?", expect: "les propositions du orch improve show de la veille" }
+  - { id: MI04, family: ingestion, level: 3, question: "Quel était le dernier backup-restore vert ?", expect: "date du dernier restore-check ok dans le journal des routines" }

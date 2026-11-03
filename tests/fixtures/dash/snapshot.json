@@ -1,0 +1,351 @@
+{
+  "at": "2026-11-01T10:00:00.000Z",
+  "projects": [
+    { "name": "front", "leads": 1, "lanes": 6, "spendUsd": 0.42 },
+    { "name": "lab", "leads": 1, "lanes": 1, "spendUsd": 0.08 },
+    { "name": "notes", "leads": 0, "lanes": 0, "spendUsd": 0 }
+  ],
+  "leads": [
+    {
+      "id": "kiba:lab",
+      "project": "lab",
+      "pid": 1842,
+      "harness": "claude",
+      "model": "claude-opus-4-5",
+      "effort": "high",
+      "permissionMode": "bypassPermissions",
+      "started": "2026-11-01T08:12:00.000Z",
+      "uptimeSec": 6480,
+      "remoteControl": true,
+      "supervised": true,
+      "cwd": "/home/kevin/lab",
+      "activity": "idle"
+    },
+    {
+      "id": "kiba:front",
+      "project": "front",
+      "pid": 1901,
+      "harness": "codex",
+      "model": "gpt-5.1",
+      "effort": "medium",
+      "permissionMode": null,
+      "started": "2026-11-01T09:01:00.000Z",
+      "uptimeSec": 3540,
+      "remoteControl": false,
+      "supervised": false,
+      "cwd": "/home/kevin/lab/front",
+      "activity": "working"
+    }
+  ],
+  "lanes": [
+    {
+      "id": "20261101T090100-codex-1-aaaa",
+      "project": "front",
+      "status": "running",
+      "harness": "codex",
+      "model": "gpt-5.1",
+      "effort": "medium",
+      "costUsd": 0.31,
+      "started": "2026-11-01T09:05:00.000Z",
+      "ended": null,
+      "life": "running",
+      "blocked": false,
+      "verifyOk": null,
+      "worktree": "/tmp/wt-front-aaaa",
+      "durationSec": 3300,
+      "tokens": { "input": 12000, "output": 2800, "cacheRead": 4000, "cacheWrite": 200 },
+      "pid": 1908
+    },
+    {
+      "id": "20261101T083000-grok-2-bbbb",
+      "project": "front",
+      "status": "blocked",
+      "harness": "grok",
+      "model": "grok-4",
+      "effort": "high",
+      "costUsd": 0.11,
+      "started": "2026-11-01T08:30:00.000Z",
+      "ended": null,
+      "life": "blocked",
+      "blocked": true,
+      "verifyOk": null,
+      "worktree": "/tmp/wt-front-bbbb",
+      "durationSec": 5400,
+      "tokens": { "input": 3000, "output": 800, "cacheRead": 0, "cacheWrite": 0 },
+      "pid": 1880
+    },
+    {
+      "id": "20261101T093000-claude-4-eeee",
+      "project": "front",
+      "status": "pending",
+      "harness": "claude",
+      "model": "claude-haiku-4-5",
+      "effort": "low",
+      "costUsd": 0,
+      "started": "2026-11-01T09:30:00.000Z",
+      "ended": null,
+      "life": "queued",
+      "blocked": false,
+      "verifyOk": null,
+      "worktree": "/tmp/wt-front-eeee",
+      "durationSec": 0,
+      "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+      "pid": null
+    },
+    {
+      "id": "20261101T092000-codex-5-ffff",
+      "project": "front",
+      "status": "pending",
+      "harness": "codex",
+      "model": "gpt-5.1",
+      "effort": "low",
+      "costUsd": 0,
+      "started": "2026-11-01T09:20:00.000Z",
+      "ended": null,
+      "life": "claimed",
+      "blocked": false,
+      "verifyOk": null,
+      "worktree": "/tmp/wt-front-ffff",
+      "durationSec": 2400,
+      "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+      "pid": 1920
+    },
+    {
+      "id": "20261101T084500-claude-6-gggg",
+      "project": "front",
+      "status": "running",
+      "harness": "claude",
+      "model": "claude-haiku-4-5",
+      "effort": "medium",
+      "costUsd": 0.05,
+      "started": "2026-11-01T08:45:00.000Z",
+      "ended": null,
+      "life": "verify",
+      "blocked": false,
+      "verifyOk": true,
+      "worktree": "/tmp/wt-front-gggg",
+      "durationSec": 4500,
+      "tokens": { "input": 2000, "output": 400, "cacheRead": 0, "cacheWrite": 0 },
+      "pid": 1870
+    },
+    {
+      "id": "20261101T080000-codex-7-hhhh",
+      "project": "front",
+      "status": "failed",
+      "harness": "codex",
+      "model": "gpt-5.1",
+      "effort": "high",
+      "costUsd": 0.19,
+      "started": "2026-11-01T08:00:00.000Z",
+      "ended": "2026-11-01T08:18:00.000Z",
+      "life": "failed",
+      "blocked": false,
+      "verifyOk": false,
+      "worktree": "/tmp/wt-front-hhhh",
+      "durationSec": 1080,
+      "tokens": { "input": 4000, "output": 900, "cacheRead": 0, "cacheWrite": 0 },
+      "pid": null
+    },
+    {
+      "id": "20261101T081500-claude-3-cccc",
+      "project": "lab",
+      "status": "complete",
+      "harness": "claude",
+      "model": "claude-haiku-4-5",
+      "effort": "low",
+      "costUsd": 0.08,
+      "started": "2026-11-01T08:15:00.000Z",
+      "ended": "2026-11-01T08:22:00.000Z",
+      "life": "done",
+      "blocked": false,
+      "verifyOk": true,
+      "worktree": "/tmp/wt-lab-cccc",
+      "durationSec": 420,
+      "tokens": { "input": 1000, "output": 200, "cacheRead": 0, "cacheWrite": 0 },
+      "pid": null
+    }
+  ],
+  "ledger": [
+    {
+      "id": "20261101T081500-claude-3-cccc",
+      "at": "2026-11-01T08:22:00.000Z",
+      "kind": "run",
+      "project": "lab",
+      "status": "complete",
+      "model": "claude-haiku-4-5",
+      "effort": "low",
+      "costUsd": 0.08,
+      "channel": "cli"
+    },
+    {
+      "id": "20261101T070000-codex-0-dddd",
+      "at": "2026-11-01T07:12:00.000Z",
+      "kind": "run",
+      "project": "front",
+      "status": "complete",
+      "model": "gpt-5.1",
+      "effort": "medium",
+      "costUsd": 0.42,
+      "channel": "cli"
+    },
+    {
+      "id": "20261101T070000-codex-0-dddd",
+      "at": "2026-11-01T07:13:00.000Z",
+      "kind": "outcome",
+      "status": "integrated"
+    }
+  ],
+  "spend": { "used": 1.24, "cap": 8 },
+  "plan": { "used": 42000, "cap": 320000 },
+  "budget": {
+    "budget": 3,
+    "cpu": 8,
+    "ram": 4,
+    "ceiling": 6,
+    "quota": 3,
+    "limitedBy": "quota"
+  },
+  "bus": {
+    "active": true,
+    "mailboxes": [
+      {
+        "project": "lab",
+        "inboxValid": 2,
+        "inboxInvalid": 0,
+        "acked": 1,
+        "escalated": 1,
+        "neighbors": [{ "name": "front", "role": "consumer" }]
+      }
+    ],
+    "recent": [
+      {
+        "id": "aabbccdd",
+        "from": "front",
+        "to": "lab",
+        "kind": "request",
+        "at": "2026-11-01T09:40:00.000Z",
+        "status": "inbox",
+        "subject": "aligner le contrat"
+      }
+    ],
+    "pending": [
+      {
+        "id": "eeff0011",
+        "from": "lab",
+        "to": "front",
+        "kind": "request",
+        "at": "2026-11-01T09:10:00.000Z",
+        "status": "escalate",
+        "subject": "plus de 2 allers-retours"
+      }
+    ],
+    "rounds": { "threads": 2, "hops": 5, "maxHop": 4, "roundTrips": 2 }
+  },
+  "activity": [
+    { "at": "2026-11-01T09:30:00.000Z", "actor": { "kind": "lane", "id": "20261101T093000-claude-4-eeee", "harness": "claude", "project": "front" }, "verb": "enregistre la lane", "text": "queued · claude-haiku-4-5" },
+    { "at": "2026-11-01T09:20:00.000Z", "actor": { "kind": "lane", "id": "20261101T092000-codex-5-ffff", "harness": "codex", "project": "front" }, "verb": "enregistre la lane", "text": "claimed · gpt-5.1" },
+    { "at": "2026-11-01T09:05:00.000Z", "actor": { "kind": "lane", "id": "20261101T090100-codex-1-aaaa", "harness": "codex", "project": "front" }, "verb": "prend la lane", "text": "running · gpt-5.1" },
+    { "at": "2026-11-01T09:01:00.000Z", "actor": { "kind": "lead", "id": "kiba:front", "harness": "codex", "project": "front" }, "verb": "travaille", "text": "codex · gpt-5.1" },
+    { "at": "2026-11-01T09:00:00.000Z", "actor": { "kind": "log", "id": "next", "project": "front" }, "verb": "note NEXT", "text": "RESUME: suivre la lane Codex" },
+    { "at": "2026-11-01T08:30:00.000Z", "actor": { "kind": "lane", "id": "20261101T083000-grok-2-bbbb", "harness": "grok", "project": "front" }, "verb": "signale un blocage", "text": "blocked · grok-4" },
+    { "at": "2026-11-01T08:22:00.000Z", "actor": { "kind": "lane", "id": "20261101T081500-claude-3-cccc", "harness": "claude", "project": "lab" }, "verb": "termine", "text": "complete" },
+    { "at": "2026-11-01T08:12:00.000Z", "actor": { "kind": "lead", "id": "kiba:lab", "harness": "claude", "project": "lab" }, "verb": "est au repos", "text": "claude · claude-opus-4-5" }
+  ],
+  "working": [
+    {
+      "laneId": "20261101T090100-codex-1-aaaa",
+      "project": "front",
+      "harness": "codex",
+      "model": "gpt-5.1",
+      "elapsedSec": 3300,
+      "toolCalls": 4,
+      "stream": [
+        "Lane en cours. Pas de flux d'outils en direct : dernier état connu.",
+        "VERIFY pas encore lancé."
+      ],
+      "steps": [
+        { "label": "Démarrage", "durationSec": 30 },
+        { "label": "Travail", "durationSec": 3270 }
+      ]
+    },
+    {
+      "laneId": "20261101T084500-claude-6-gggg",
+      "project": "front",
+      "harness": "claude",
+      "model": "claude-haiku-4-5",
+      "elapsedSec": 4500,
+      "toolCalls": 1,
+      "stream": [
+        "VERIFY en cours. Dernier état connu : worker terminé."
+      ],
+      "steps": [
+        { "label": "Démarrage", "durationSec": 30 },
+        { "label": "Travail", "durationSec": 4470 },
+        { "label": "VERIFY", "durationSec": 0 }
+      ]
+    }
+  ],
+  "runtimes": [
+    {
+      "id": "host",
+      "kind": "host",
+      "name": "kev",
+      "online": true,
+      "live": true,
+      "detail": "16 cœurs · 32 Gio",
+      "tokens": { "input": 16000, "output": 3800, "cacheRead": 4000, "cacheWrite": 200 },
+      "costUsd": 0.5
+    },
+    {
+      "id": "claude",
+      "kind": "harness",
+      "name": "claude",
+      "online": true,
+      "live": true,
+      "detail": "session ouverte",
+      "tokens": { "input": 1000, "output": 200, "cacheRead": 0, "cacheWrite": 0 },
+      "costUsd": 0.08
+    },
+    {
+      "id": "codex",
+      "kind": "harness",
+      "name": "codex",
+      "online": true,
+      "live": true,
+      "detail": "session ouverte",
+      "tokens": { "input": 12000, "output": 2800, "cacheRead": 4000, "cacheWrite": 200 },
+      "costUsd": 0.31
+    },
+    {
+      "id": "grok",
+      "kind": "harness",
+      "name": "grok",
+      "online": false,
+      "live": false,
+      "detail": "absent",
+      "tokens": { "input": 3000, "output": 800, "cacheRead": 0, "cacheWrite": 0 },
+      "costUsd": 0.11
+    }
+  ],
+  "heat": [
+    { "day": "2026-10-28", "costUsd": 0.2, "runs": 1 },
+    { "day": "2026-10-29", "costUsd": 0.0, "runs": 0 },
+    { "day": "2026-10-30", "costUsd": 0.15, "runs": 1 },
+    { "day": "2026-10-31", "costUsd": 0.5, "runs": 2 },
+    { "day": "2026-11-01", "costUsd": 0.5, "runs": 3 }
+  ],
+  "daily": [
+    { "day": "2026-10-28", "costUsd": 0.2, "runs": 1 },
+    { "day": "2026-10-29", "costUsd": 0.0, "runs": 0 },
+    { "day": "2026-10-30", "costUsd": 0.15, "runs": 1 },
+    { "day": "2026-10-31", "costUsd": 0.5, "runs": 2 },
+    { "day": "2026-11-01", "costUsd": 0.5, "runs": 3 }
+  ],
+  "skills": [
+    { "id": "model-refresh", "name": "model-refresh", "description": "Recaler les modèles du profil après une sortie LLM." }
+  ],
+  "logs": [
+    { "at": "2026-11-01T09:00:00.000Z", "kind": "next", "project": "front", "text": "RESUME: suivre la lane Codex" },
+    { "at": "2026-11-01T08:20:00.000Z", "kind": "state", "project": "lab", "text": "branch develop @ abc123" }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "orch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "orch": "src/orch.ts",
+    "lane": "src/lane.ts",
+    "lead": "src/lead.ts",
+    "kiba": "src/lead.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "dash:build": "bun run --cwd ui build",
+    "dash": "bun run --cwd ui build && bun src/orch.ts dash"
+  },
+  "workspaces": ["ui"],
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "pino": "^10.4.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-pgvector": "^0.0.12",
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}

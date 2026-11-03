@@ -1,0 +1,6 @@
+# Notification channels of orch (src/presence/notify.ts): orch serve,
+# routine alerts, improve and reflect. The persistent presence lead is
+# retired; the always-on conductor is orch serve (orch-serve.service).
+# none, or a list of telegram (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in
+# .env) and discord (DISCORD_WEBHOOK_URL). Test with: orch presence notify hello
+notify: [discord]  # add telegram once TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set

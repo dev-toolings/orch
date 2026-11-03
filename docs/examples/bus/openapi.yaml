@@ -1,0 +1,10 @@
+openapi: 3.0.3
+info:
+  title: demo
+  version: "1"
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: ok

@@ -1,0 +1,9 @@
+name: api
+bus:
+  root: ~/lab/.orch-bus
+  keys: ~/.orch/bus-keys
+  neighbors:
+    - name: front
+      path: ../front
+      contract: openapi.yaml
+      role: consumer

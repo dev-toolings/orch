@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "name": "poc-toy-ts",
+  "seed": 20261101,
+  "toyRepo": {
+    "package.json": "{\n  \"name\": \"toy\",\n  \"private\": true,\n  \"type\": \"module\"\n}\n",
+    "README.md": "# toy\n\nPetit dépôt jouet du banc d'architecture orch.\n",
+    "src/index.ts": "export * from \"./strings.ts\";\nexport * from \"./math.ts\";\nexport * from \"./cart.ts\";\n",
+    "src/strings.ts": "export function trimAll(s: string): string {\n  return s.replace(/\\s+/g, \" \").trim();\n}\n",
+    "src/math.ts": "export function add(a: number, b: number): number {\n  return a + b;\n}\n",
+    "src/cart.ts": "export interface Item { price: number; qty: number }\n\nexport function cartTotal(items: Item[]): number {\n  return items.reduce((n, i) => n + i.price * i.qty, 0);\n}\n",
+    "src/auth/session.ts": "export interface Session { issuedAt: number; ttlSeconds: number }\n",
+    "src/db/schema.ts": "export const USERS_COLUMNS = [\"id\", \"name\"];\n",
+    "src/db/users.ts": "export {};\n",
+    "migrations/001_init.sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\n",
+    "tests/base.test.ts": "import { expect, test } from \"bun:test\";\nimport { add, cartTotal, trimAll } from \"../src/index.ts\";\n\ntest(\"base\", () => {\n  expect(add(2, 3)).toBe(5);\n  expect(trimAll(\"  a   b \")).toBe(\"a b\");\n  expect(cartTotal([{ price: 2, qty: 3 }])).toBe(6);\n});\n"
+  },
+  "tasks": [
+    {
+      "id": "T1", "at": 0, "size": "mechanical", "mechanical": true,
+      "files": ["src/strings.ts"],
+      "objective": "Ajoute et exporte `capitalize(s: string): string` dans src/strings.ts : première lettre en majuscule, le reste inchangé, chaîne vide renvoyée telle quelle.",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { capitalize } from \"../../src/strings.ts\";\ntest(\"T1\", () => {\n  expect(capitalize(\"abc\")).toBe(\"Abc\");\n  expect(capitalize(\"\")).toBe(\"\");\n  expect(capitalize(\"éte\")).toBe(\"Éte\");\n});\n"
+    },
+    {
+      "id": "T2", "at": 240, "size": "mechanical", "mechanical": true,
+      "files": ["src/math.ts"],
+      "objective": "Ajoute et exporte `clamp(x: number, min: number, max: number): number` dans src/math.ts ; lève une Error si min > max.",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { clamp } from \"../../src/math.ts\";\ntest(\"T2\", () => {\n  expect(clamp(5, 0, 3)).toBe(3);\n  expect(clamp(-1, 0, 3)).toBe(0);\n  expect(clamp(2, 0, 3)).toBe(2);\n  expect(() => clamp(1, 3, 0)).toThrow();\n});\n"
+    },
+    {
+      "id": "T3", "at": 420, "size": "normal", "mechanical": false,
+      "files": ["src/discount.ts", "src/cart.ts", "src/index.ts"],
+      "objective": "Crée src/discount.ts avec `applyDiscount(total: number, code: string): number` (\"TEN\" retire 10 %, \"FIVEOFF\" retire 5 sans descendre sous 0, tout autre code lève une Error), exporte-le depuis src/index.ts, et ajoute un paramètre optionnel `code?: string` à `cartTotal` qui l'applique.",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { applyDiscount, cartTotal } from \"../../src/index.ts\";\ntest(\"T3\", () => {\n  expect(applyDiscount(100, \"TEN\")).toBeCloseTo(90);\n  expect(applyDiscount(3, \"FIVEOFF\")).toBe(0);\n  expect(() => applyDiscount(10, \"NOPE\")).toThrow();\n  expect(cartTotal([{ price: 10, qty: 2 }], \"FIVEOFF\")).toBe(15);\n  expect(cartTotal([{ price: 10, qty: 2 }])).toBe(20);\n});\n"
+    },
+    {
+      "id": "T4", "at": 900, "size": "normal", "mechanical": false,
+      "files": ["src/csv.ts", "src/index.ts"],
+      "objective": "Crée src/csv.ts avec `parseCsvLine(line: string): string[]` (séparateur virgule, champs entre guillemets, \"\" pour un guillemet échappé) et exporte-le depuis src/index.ts.",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { parseCsvLine } from \"../../src/index.ts\";\ntest(\"T4\", () => {\n  expect(parseCsvLine(\"a,b,c\")).toEqual([\"a\", \"b\", \"c\"]);\n  expect(parseCsvLine('\"a,b\",c')).toEqual([\"a,b\", \"c\"]);\n  expect(parseCsvLine('\"x\"\"y\",')).toEqual(['x\"y', \"\"]);\n});\n"
+    },
+    {
+      "id": "T5", "at": 1200, "size": "risky", "mechanical": false,
+      "files": ["src/auth/session.ts"],
+      "objective": "Dans src/auth/session.ts, ajoute `isSessionValid(s: Session, now: number): boolean` : faux si ttlSeconds <= 0, faux si now >= issuedAt + ttlSeconds * 1000, vrai sinon (temps en millisecondes).",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { isSessionValid } from \"../../src/auth/session.ts\";\ntest(\"T5\", () => {\n  expect(isSessionValid({ issuedAt: 0, ttlSeconds: 10 }, 9_999)).toBe(true);\n  expect(isSessionValid({ issuedAt: 0, ttlSeconds: 10 }, 10_000)).toBe(false);\n  expect(isSessionValid({ issuedAt: 0, ttlSeconds: 0 }, 0)).toBe(false);\n  expect(isSessionValid({ issuedAt: 0, ttlSeconds: -5 }, 0)).toBe(false);\n});\n"
+    },
+    {
+      "id": "T6", "at": 1500, "size": "mechanical", "mechanical": true,
+      "files": ["src/stats.ts", "src/index.ts", "README.md"],
+      "objective": "Crée src/stats.ts avec `sum(xs: number[]): number` et `mean(xs: number[]): number` (mean([]) lève une Error), exporte-les depuis src/index.ts et mentionne-les dans README.md.",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { mean, sum } from \"../../src/index.ts\";\ntest(\"T6\", () => {\n  expect(sum([1, 2, 3])).toBe(6);\n  expect(sum([])).toBe(0);\n  expect(mean([2, 4])).toBe(3);\n  expect(() => mean([])).toThrow();\n});\n"
+    },
+    {
+      "id": "T7", "at": 1800, "size": "normal", "mechanical": false,
+      "files": ["src/lru.ts", "src/index.ts", "docs/lru.md"],
+      "objective": "Crée src/lru.ts avec une classe `LruCache<K, V>` (constructeur `capacity: number`, `get(k): V | undefined` qui rafraîchit l'entrée, `set(k, v)` qui évince la moins récente, getter `size`), exporte-la depuis src/index.ts et documente-la dans docs/lru.md.",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { LruCache } from \"../../src/index.ts\";\ntest(\"T7\", () => {\n  const c = new LruCache<string, number>(2);\n  c.set(\"a\", 1); c.set(\"b\", 2);\n  expect(c.get(\"a\")).toBe(1);\n  c.set(\"c\", 3);\n  expect(c.get(\"b\")).toBeUndefined();\n  expect(c.get(\"a\")).toBe(1);\n  expect(c.size).toBe(2);\n});\n"
+    },
+    {
+      "id": "T8", "at": 2200, "size": "risky", "mechanical": false,
+      "files": ["migrations/002_add_email.sql", "src/db/schema.ts", "src/db/users.ts"],
+      "objective": "Ajoute une colonne email : migrations/002_add_email.sql (ALTER TABLE users ADD COLUMN email TEXT), \"email\" dans USERS_COLUMNS de src/db/schema.ts, et `normalizeEmail(e: string): string` dans src/db/users.ts (trim + minuscules, lève une Error sans @).",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { readFileSync } from \"node:fs\";\nimport { USERS_COLUMNS } from \"../../src/db/schema.ts\";\nimport { normalizeEmail } from \"../../src/db/users.ts\";\ntest(\"T8\", () => {\n  expect(USERS_COLUMNS).toContain(\"email\");\n  expect(normalizeEmail(\"  A@B.io \")).toBe(\"a@b.io\");\n  expect(() => normalizeEmail(\"nope\")).toThrow();\n  expect(readFileSync(\"migrations/002_add_email.sql\", \"utf8\").toUpperCase()).toContain(\"ADD COLUMN EMAIL\");\n});\n"
+    },
+    {
+      "id": "T9", "at": 2600, "size": "normal", "mechanical": false,
+      "files": ["src/dates.ts"],
+      "objective": "Crée src/dates.ts avec `formatDuration(ms: number): string` : \"5s\" sous une minute, \"2m 03s\" sous une heure, \"1h 02m 03s\" au-delà (secondes tronquées).",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { formatDuration } from \"../../src/dates.ts\";\ntest(\"T9\", () => {\n  expect(formatDuration(5_400)).toBe(\"5s\");\n  expect(formatDuration(123_000)).toBe(\"2m 03s\");\n  expect(formatDuration(3_723_000)).toBe(\"1h 02m 03s\");\n});\n"
+    },
+    {
+      "id": "T10", "at": 2900, "size": "normal", "mechanical": false,
+      "files": ["src/emitter.ts", "src/index.ts", "docs/emitter.md"],
+      "objective": "Crée src/emitter.ts avec une classe `Emitter` (`on(name, fn)` renvoie une fonction de désabonnement, `emit(name, ...args)`), exporte-la depuis src/index.ts et documente-la dans docs/emitter.md.",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { Emitter } from \"../../src/index.ts\";\ntest(\"T10\", () => {\n  const e = new Emitter(); let n = 0;\n  const off = e.on(\"x\", () => { n++; });\n  e.emit(\"x\"); off(); e.emit(\"x\");\n  expect(n).toBe(1);\n});\n"
+    },
+    {
+      "id": "T11", "at": 3300, "size": "mechanical", "mechanical": true,
+      "files": ["src/strings.ts"],
+      "objective": "Ajoute et exporte `kebabCase(s: string): string` dans src/strings.ts (\"Hello World\" et \"helloWorld\" donnent \"hello-world\").",
+      "accept": "import { expect, test } from \"bun:test\";\nimport { kebabCase } from \"../../src/strings.ts\";\ntest(\"T11\", () => {\n  expect(kebabCase(\"Hello World\")).toBe(\"hello-world\");\n  expect(kebabCase(\"helloWorld\")).toBe(\"hello-world\");\n});\n"
+    }
+  ],
+  "followups": [
+    { "id": "F1", "at": 600, "task": "T3", "kind": "comment", "text": "Pense à garder cartTotal compatible sans code." },
+    { "id": "F2", "at": 700, "task": "T3", "kind": "ci_fail", "text": "CI : tests/base.test.ts échoue sur la branche de T3." },
+    { "id": "F3", "at": 1400, "task": "T5", "kind": "ci_pass", "text": "CI verte sur la branche de T5." },
+    { "id": "F4", "at": 2000, "task": "T7", "kind": "comment", "text": "La doc peut rester courte, trois lignes suffisent." },
+    { "id": "F5", "at": 2400, "task": "T8", "kind": "comment", "text": "Ajoute un commentaire -- down dans la migration." },
+    { "id": "F6", "at": 2500, "task": "T8", "kind": "ci_fail", "text": "CI : la migration 002 n'est pas listée dans l'ordre attendu." },
+    { "id": "F7", "at": 3100, "task": "T10", "kind": "cancel", "text": "Annule T10, on n'en a plus besoin." }
+  ],
+  "noise": {
+    "chatter": 50,
+    "comments": 25,
+    "ciPass": 25,
+    "horizon": 3600,
+    "chatterTexts": ["salut", "merci !", "tu es là ?", "ok", "bien vu", "je regarde ça demain", "pause café", "c'est noté"],
+    "commentTexts": ["tu en es où ?", "+1", "pas pressé", "ça avance ?", "merci pour celle-là"]
+  },
+  "mock": {
+    "laneSlots": 3,
+    "leadTurn": { "seconds": 25, "input": 1500, "cacheRead": 24000, "cacheWrite": 1500, "output": 450 },
+    "leadContextGrowth": 1800,
+    "leadContextMax": 150000,
+    "laneStartup": { "seconds": 40, "input": 2000, "cacheRead": 0, "cacheWrite": 10000, "output": 0 },
+    "exec": {
+      "mechanical": { "seconds": 150, "input": 6000, "cacheRead": 40000, "cacheWrite": 6000, "output": 2500 },
+      "normal": { "seconds": 360, "input": 12000, "cacheRead": 120000, "cacheWrite": 12000, "output": 6000 },
+      "risky": { "seconds": 540, "input": 16000, "cacheRead": 180000, "cacheWrite": 16000, "output": 9000 }
+    },
+    "effortFactor": { "low": 0.7, "medium": 1.0, "high": 1.4, "xhigh": 1.8, "max": 2.2 },
+    "modelSpeed": { "opus": 1.0, "sonnet": 0.9, "haiku": 0.6 },
+    "followup": {
+      "comment": { "seconds": 60, "input": 800, "cacheRead": 20000, "cacheWrite": 800, "output": 600 },
+      "ci_fail": { "seconds": 180, "input": 2000, "cacheRead": 40000, "cacheWrite": 2000, "output": 2000 },
+      "ci_pass": { "seconds": 5, "input": 200, "cacheRead": 5000, "cacheWrite": 0, "output": 50 },
+      "cancel": { "seconds": 0, "input": 0, "cacheRead": 0, "cacheWrite": 0, "output": 0 }
+    },
+    "success": {
+      "opus": { "mechanical": 0.98, "normal": 0.93, "risky": 0.88 },
+      "sonnet": { "mechanical": 0.97, "normal": 0.9, "risky": 0.82 },
+      "haiku": { "mechanical": 0.93, "normal": 0.75, "risky": 0.6 }
+    },
+    "effortSuccess": {
+      "low": { "mechanical": -0.02, "normal": -0.12, "risky": -0.2 },
+      "medium": { "mechanical": 0, "normal": 0, "risky": 0 },
+      "high": { "mechanical": 0.01, "normal": 0.04, "risky": 0.08 },
+      "xhigh": { "mechanical": 0.01, "normal": 0.05, "risky": 0.1 }
+    },
+    "leadEffort": "high",
+    "laneModels": { "low": "haiku", "medium": "sonnet", "high": "sonnet", "xhigh": "opus", "max": "opus" },
+    "maxAttempts": 3,
+    "matrix": { "trials": 20, "successThreshold": 0.9 },
+    "kiba": {
+      "leadTurn": {
+        "sonnet": { "seconds": 8, "input": 700, "cacheRead": 7000, "cacheWrite": 700, "output": 90 },
+        "opus": { "seconds": 14, "input": 700, "cacheRead": 7000, "cacheWrite": 700, "output": 90 }
+      },
+      "leadEffort": "medium",
+      "leadContextGrowth": 160,
+      "leadContextWindow": 200000,
+      "freshStateTokens": 600,
+      "detailReadRate": 0.3,
+      "detailRead": { "seconds": 3, "input": 400, "cacheRead": 0, "cacheWrite": 400, "output": 30 },
+      "invalidRate": 0,
+      "laneStartupCold": { "seconds": 40, "input": 2000, "cacheRead": 0, "cacheWrite": 10000, "output": 0 },
+      "laneStartupWarm": { "seconds": 2, "input": 800, "cacheRead": 0, "cacheWrite": 4000, "output": 0 },
+      "refillSeconds": 45,
+      "workerContextFactor": 0.85,
+      "hangRate": 0,
+      "config": { "fast_path": true, "pool": { "haiku": 1, "sonnet": 1, "opus": 1 }, "lane_timeout_seconds": 900, "escalate_after": 2 }
+    }
+  }
+}

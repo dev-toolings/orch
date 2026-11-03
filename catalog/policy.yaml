@@ -1,0 +1,34 @@
+# Control plane (src/core/policy.ts). Checked before lane runs and paid
+# routines. Pause: ORCH_PAUSE=1 or <state dir>/PAUSE (`orch kill` /
+# `orch resume`). spend.daily_usd is accepted for backward compatibility but
+# ignored (deprecated): spend is tracked as an informational estimate only.
+# plan_tokens is a daily Claude/Codex usage quota
+# used for concurrency (cpu/ram/ceiling AND remaining tokens). Null is
+# unlimited. It is not a second USD cap and does not fail over to another
+# account.
+# lead.autocompact_tokens configures Claude Code auto-compaction for the lead
+# launcher through CLAUDE_CODE_AUTO_COMPACT_WINDOW. Null keeps Claude defaults.
+# lead.claude: { model, effort } overrides the Claude lead's model and effort
+# of the profile (catalog/profiles/kiba.yaml: opus/medium) on this host, e.g.
+# `claude: { model: sonnet, effort: medium }` for a cheaper conductor.
+# lead.channels: true lets the kiba MCP server push lane results into the
+# Claude lead (MCP channel, research preview: adds
+# --dangerously-load-development-channels server:kiba). Off by default: the
+# lead is woken through its tmux pane and the prompt hook instead.
+spend:
+  embed_usd_per_million: 0.02
+  plan_tokens: null
+# logs prune (daily at prune_at): Codex and Grok session logs, and orch's own
+# run folders under the state dir (contests, reviews, asks), past retention_days.
+logs:
+  retention_days: 7
+  prune_at: "12:00"
+lead:
+  autocompact_tokens: 900000
+paid_routines:
+  - brain-embed
+  - hindsight-seed
+  - improve
+  - reflect
+  - transcript-ingest
+  - rules-bench
