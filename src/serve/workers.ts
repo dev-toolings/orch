@@ -102,7 +102,8 @@ export function nativeReceipt(results: any[], code: number | null, expected: str
   const cost = complete ? deltas.reduce((n, d) => n + d.costUSD!, 0) : null;
   const sameSession = observed === expected && results.every((r) => r.session_id === expected);
   return { ok: code === 0 && results.length > 0 && !results.at(-1).is_error && !escaped && sameSession, session: observed, cost, costComplete: complete, model,
-    error: !sameSession ? "native session identity changed" : escaped ? "native write escaped task checkout" : code === 0 ? undefined : `native exit ${code}` };
+    ...(escaped ? { escaped } : {}),
+    error: escaped ? "native write escaped task checkout" : !sameSession ? "native session identity changed" : code === 0 ? undefined : `native exit ${code}` };
 }
 
 export const questionOf = (text: string) => /^QUESTION:\s*(.+)$/m.exec(text)?.[1]?.trim();

@@ -16,6 +16,7 @@ import { loadProfile } from "../core/profile.ts";
 import { atomicJson, jobAlive, newTaskId, processStamp, tasksDir, terminateJob, TaskStore, type Effect, type Job, type Mandate, type StoredEvent, type Task, type TaskEvent } from "../core/tasks.ts";
 import { heldThreadsAt, subscribeThreadAt, threadHolderAt } from "../core/threads.ts";
 import { codeKind, DEFAULT_KIBA, rungFor, validateKibaConfig, type KibaConfig } from "../kiba/rules.ts";
+import { outsideWrites } from "../lanes/guard.ts";
 import { killGroup, Watchdog, type LaneWatch } from "../kiba/watchdog.ts";
 import { withFileLock } from "../lanes/lock.ts";
 import { neutralizeWorktreeHooks } from "../lanes/protect.ts";
@@ -195,6 +196,13 @@ export const taskKind = (t: Task) => t.mandate.risk === "risky" ? "risky" as con
 
 const RELAUNCH_MS = 30_000;
 
+// A worker that died left no receipt, only its log: a write outside the
+// worktree there must hold the task, not reach the recovery relaunch.
+function escapedWrites(dir: string, t?: Task): string[] {
+  if (!t?.worktree) return [];
+  try { return outsideWrites("claude", readFileSync(join(dir, "model.jsonl"), "utf8"), t.worktree).written; } catch { return []; }
+}
+
 async function superviseJobs(d: EngineDeps, run: RunState, paused: boolean): Promise<void> {
   for (const job of Object.values(d.store.read().jobs)) {
     if (!["planned", "running"].includes(job.status)) continue;
@@ -217,6 +225,13 @@ async function superviseJobs(d: EngineDeps, run: RunState, paused: boolean): Pro
     if (jobAlive(job)) continue; // adopted: still running, possibly started by an earlier engine
     const child = readJson<{ pid: number; start?: string }>(join(dir, "child.json"));
     if (child?.pid) await terminateJob(child.pid, child.start);
+    const escaped = job.kind === "execute" ? escapedWrites(dir, task) : [];
+    if (escaped.length) {
+      await d.store.reconcile(job.id, { ok: false, escaped: true, error: `native write escaped task checkout: ${escaped[0]}`.slice(0, 300) }, sessionSeen);
+      d.log(`job ${job.id}: died after a write outside its worktree, task held`);
+      await afterStep(d, job.task);
+      continue;
+    }
     if ((await d.store.reconcile(job.id, undefined, sessionSeen)) === "interrupted") d.log(`job ${job.id}: interrupted, recovery note added`);
   }
 }
