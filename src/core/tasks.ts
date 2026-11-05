@@ -84,6 +84,9 @@ export interface Task {
   worktree?: string; workBranch?: string;
   lane?: string; branch?: string; pr?: string;
   job?: string; failure?: string; evidence: Evidence[]; created: string; updated: string;
+  // Security hold (an escape): nothing launches until a person answers. Unlike
+  // a plain block, an outside event cannot lift it.
+  hold?: { reason: string; at: string };
 }
 
 export interface TaskEvent {
@@ -102,6 +105,8 @@ export type JobKind = "execute" | "verify" | "review";
 export interface JobReceipt {
   ok: boolean; error?: string; session?: string; cost?: number | null; costComplete?: boolean; model?: string; elapsedMs?: number;
   result?: string; question?: string; lane?: string; sha?: string; changed?: boolean; verdict?: string;
+  // A write left the task worktree: a security outcome, never a plain failure.
+  escaped?: boolean;
 }
 export interface Job {
   id: string; task: string; revision: number; kind: JobKind; inputs: string[]; context?: string[];
@@ -224,8 +229,14 @@ export class TaskStore {
       ev.task = t.id;
       ev.routed = routed;
       if (as === "context") { ev.disposition = "context"; evidence(t, "context", `${ev.source}: ${ev.text}`); return "context"; }
+      if (t.hold && ev.source !== "operator") {
+        ev.disposition = "context";
+        evidence(t, "held", `${ev.source} ${ev.sender}: kept as context, a person must lift the hold`);
+        return "context";
+      }
       ev.disposition = "input";
       ev.revision = ++t.revision;
+      if (t.hold) { evidence(t, "hold-lifted", `${ev.sender}: ${t.hold.reason}`); t.hold = undefined; }
       if (t.state === "blocked") t.failures = 0;
       t.state = "working";
       // No job runs: a pending verify, review or delivery belongs to the old
@@ -289,7 +300,7 @@ export class TaskStore {
   async plan(taskId: string, kind: JobKind): Promise<Job | undefined> {
     return this.change((s) => {
       const t = s.tasks[taskId];
-      if (!t || t.stopped || t.next !== kind) return undefined;
+      if (!t || t.stopped || t.hold || t.next !== kind) return undefined;
       if (t.job && ["planned", "running"].includes(s.jobs[t.job]?.status)) return undefined;
       const inputs = kind === "execute" ? Object.values(s.events).filter((e) => e.task === t.id && e.disposition === "input").map((e) => e.key) : [];
       const context = kind === "execute" ? Object.values(s.events).filter((e) => e.task === t.id && e.disposition === "context" && !e.sent).map((e) => e.key) : [];
@@ -341,6 +352,14 @@ export class TaskStore {
       if (t.job === j.id) t.job = undefined;
       if (t.stopped) return "complete";
       if (j.kind === "execute") {
+        // An escape outranks every other outcome: no ladder, no new attempt.
+        if (receipt.escaped) {
+          if (sessionSeen || receipt.session === t.session) t.sessionStarted = true;
+          t.hold = { reason: receipt.error ?? "write outside the task worktree", at: now() };
+          t.state = "blocked"; t.next = "wait"; t.failure = t.hold.reason;
+          evidence(t, "security-hold", t.hold.reason);
+          return "complete";
+        }
         if (receipt.session) {
           if (receipt.session !== t.session) { t.state = "blocked"; t.next = "wait"; t.failure = "native session identity changed"; evidence(t, "blocked", t.failure); return "complete"; }
           t.sessionStarted = true;

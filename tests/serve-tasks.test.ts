@@ -1,13 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hash, LIVE_LIMITS, RECOVERY_NOTE, TaskStore, type Effect, type Mandate, type TaskEvent } from "../src/core/tasks.ts";
+import { hash, LIVE_LIMITS, RECOVERY_NOTE, TaskStore, type Effect, type Job, type Mandate, type TaskEvent } from "../src/core/tasks.ts";
+import { DEFAULT_KIBA } from "../src/kiba/rules.ts";
 import { threadHolderAt } from "../src/core/threads.ts";
-import { commentOnce, DEFAULT_SERVE_POLICY, drainOutbox, pollGithubSource, syncThreads, type EngineDeps } from "../src/serve/engine.ts";
+import { commentOnce, DEFAULT_SERVE_POLICY, drainOutbox, pass, pollGithubSource, syncThreads, type EngineDeps, type RunState } from "../src/serve/engine.ts";
+import { jobDir } from "../src/serve/job.ts";
 import { publishDecision } from "../src/serve/publish-guard.ts";
 import { parseRouterDecision } from "../src/serve/router.ts";
+import { nativeReceipt } from "../src/serve/workers.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -211,6 +214,70 @@ test("a long run keeps the live state file bounded; archived keys still deduplic
   await store.receive({ key: "op-9", source: "operator", sender: "cli", kind: "follow", thread: "task:T2", task: "T2", text: "again" });
   expect(await store.route("op-9", "T2", "input", "operator")).toBe("input");
   expect(store.read().tasks.T2).toMatchObject({ state: "working", next: "execute" });
+});
+
+// An engine over the real store and planning pass, with a recorded launcher.
+async function engine(store: TaskStore) {
+  const root = join(store.root, ".."), wt = join(root, "wt");
+  mkdirSync(join(wt, ".git"), { recursive: true });
+  await store.setWorktree("T1", wt, "orch/task-T1");
+  const launched: string[] = [];
+  const d = { root, store, policy: DEFAULT_SERVE_POLICY, kiba: DEFAULT_KIBA, channels: [], log: () => {},
+    launch: (j: Job) => { launched.push(j.id); return undefined; } } as unknown as EngineDeps;
+  const state: RunState = { once: true, attempted: new Map(), polledAt: 0, recovered: true };
+  return { d, state, launched };
+}
+const nativeResult = (session: string) => ({ session_id: session, is_error: false, result: "done", model_usage_since_last_result: { m: { costUSD: 0.1 } } });
+
+test("an escape holds the task through receipt, journal and planning until the operator answers", async () => {
+  const store = await created();
+  const { d, state, launched } = await engine(store);
+  const session = store.read().tasks.T1.session;
+  await run(store, "execute", nativeReceipt([nativeResult(session)], 0, session, session, true));
+  expect(store.read().tasks.T1).toMatchObject({ state: "blocked", next: "wait", failures: 0, sessionStarted: true, failure: "native write escaped task checkout" });
+  await pass(d, state);
+  expect(launched).toEqual([]);
+
+  await store.receive({ key: "gh-1", source: "github", sender: "someone", kind: "review", thread: "task:T1", text: "please retry" });
+  expect(await store.route("gh-1", "T1", "input", "direct")).toBe("context");
+  expect(store.read().tasks.T1).toMatchObject({ state: "blocked", next: "wait", revision: 1 });
+  await store.change((s) => { s.tasks.T1.next = "execute"; });
+  expect(await store.plan("T1", "execute")).toBeUndefined();
+  await store.change((s) => { s.tasks.T1.next = "wait"; });
+  await pass(d, state);
+  expect(launched).toEqual([]);
+
+  await store.receive({ key: "op-2", source: "operator", sender: "cli", kind: "follow", thread: "task:T1", task: "T1", text: "checked, go on" });
+  await pass(d, state);
+  expect(store.read().tasks.T1.hold).toBeUndefined();
+  expect(store.read().tasks.T1).toMatchObject({ state: "working", revision: 2, failures: 0 });
+  expect(launched).toHaveLength(1);
+});
+
+test("an escape outranks a changed session identity", async () => {
+  const store = await created();
+  const session = store.read().tasks.T1.session;
+  const receipt = nativeReceipt([nativeResult("other")], 0, session, "other", true);
+  expect(receipt).toMatchObject({ ok: false, escaped: true, error: "native write escaped task checkout" });
+  await run(store, "execute", receipt);
+  expect(store.read().tasks.T1.hold?.reason).toBe("native write escaped task checkout");
+});
+
+test("a job that died after a write outside its worktree is held, not relaunched", async () => {
+  const store = await created();
+  const { d, state, launched } = await engine(store);
+  const job = (await store.plan("T1", "execute"))!;
+  await store.started(job.id, deadPid());
+  mkdirSync(jobDir(d.root, job.id), { recursive: true });
+  writeFileSync(join(jobDir(d.root, job.id), "model.jsonl"), [
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "w1", name: "Write", input: { file_path: "/outside/.bashrc" } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "w1" }] } },
+  ].map((e) => JSON.stringify(e)).join("\n"));
+  await pass(d, state);
+  expect(store.read().tasks.T1).toMatchObject({ state: "blocked", next: "wait" });
+  expect(store.read().tasks.T1.recovery).toBeUndefined();
+  expect(store.read().tasks.T1.hold?.reason).toContain("/outside/.bashrc");
+  expect(launched).toEqual([]);
 });
 
 test("a started session gets only the new messages and a one-line summary", async () => {

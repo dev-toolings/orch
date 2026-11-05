@@ -213,6 +213,10 @@ event.
   destination before repeating any outside action". A dead VERIFY never
   relaunches the worker. Pending outbox effects replay through their
   reconciliation; a notice is sent at most once.
+- A write outside the task worktree is a security hold, not a failure: the
+  ladder and recovery never relaunch the worker, and an outside event stays
+  context. Only `orch task follow` from the operator lifts it. A job that died
+  without a receipt is checked through its log first.
 - `orch task stop` ends a task for good (running jobs killed, pending effects
   withdrawn); PAUSE holds every new step and publication.
 

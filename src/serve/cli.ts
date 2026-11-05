@@ -33,7 +33,8 @@ export function showTask(t: Task): string {
     `REVISION: ${t.revision} (delivered ${t.deliveredRevision}); attempts ${t.attempt}; failures ${t.failures}`,
     ...(t.worktree ? [`WORKTREE: ${t.worktree} (${t.workBranch})`] : []), ...(t.lane ? [`LANE: ${t.lane}`] : []),
     ...(t.branch ? [`BRANCH: ${t.branch}`] : []), ...(t.pr ? [`PR: ${t.pr}`] : []), ...(t.stopped ? [`STOPPED: by ${t.stopped.by} at ${t.stopped.at}`] : []),
-    ...(t.failure ? [`FAILURE: ${t.failure}`] : []), "EVIDENCE:", ...t.evidence.slice(-12).map((e) => `  ${e.at} ${e.kind}: ${e.text}`), ""].join("\n");
+    ...(t.failure ? [`FAILURE: ${t.failure}`] : []),
+    ...(t.hold ? [`HOLD: security, since ${t.hold.at}; inspect the worktree, then \`orch task follow ${t.id}\` lifts it`] : []), "EVIDENCE:", ...t.evidence.slice(-12).map((e) => `  ${e.at} ${e.kind}: ${e.text}`), ""].join("\n");
 }
 
 // `kiba --conductor`: the conductor is orch serve; this is its status.
